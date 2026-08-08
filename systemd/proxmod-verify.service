@@ -1,0 +1,49 @@
+# proxmod's boot-time safety net.
+#
+# The dpkg trigger is the primary convergence mechanism and it is the better
+# one: it fires when something relevant actually changed, is ordered by dpkg,
+# and runs on `dpkg -i` as well as on apt. This unit exists for everything the
+# trigger cannot see:
+#
+#   * a host restored from a backup or cloned from a template, where the files
+#     are present but /etc/systemd/system was not part of what was restored
+#   * an administrator who removed a drop-in by hand and forgot
+#   * a dpkg run that was interrupted between unpack and trigger processing
+#   * a proxmod that self-healed on the last boot, whose cause has since been
+#     fixed by an upgrade
+#
+# On a healthy host this costs one process and makes no systemctl calls at all:
+# proxmod-reapply restarts nothing unless the drop-ins moved or the running
+# daemons are genuinely not loading proxmod.
+
+[Unit]
+Description=Converge proxmod's systemd drop-ins
+Documentation=man:proxmodctl(8)
+
+# After the units it converges, not before. Ordering this ahead of pveproxy
+# would mean a restart during boot on any run where something did change, which
+# is both slower and harder to read in the journal than converging afterwards.
+After=pvedaemon.service pveproxy.service
+Wants=pvedaemon.service pveproxy.service
+
+# pmxcfs is not mounted this early and proxmod-reapply never reads /etc/pve, so
+# there is deliberately no dependency on pve-cluster here. Adding one would make
+# proxmod's recovery path depend on the cluster filesystem being healthy —
+# precisely the situation in which you most want the web interface back.
+ConditionPathExists=/usr/lib/proxmod/proxmod-reapply
+ConditionPathExists=!/proxmox_install_mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/proxmod/proxmod-reapply --quiet
+
+# A failure here has already been handled: proxmod-reapply removes its own
+# drop-ins and restarts the daemons stock before it ever exits non-zero. Letting
+# systemd mark the unit failed is the right outcome — it is visible in
+# `systemctl status` and to monitoring — but it must not block anything, which
+# is why nothing Requires= this unit.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

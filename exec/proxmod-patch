@@ -1,0 +1,141 @@
+#!/usr/bin/perl
+
+# proxmod-patch — drive the managed patch facility.
+#
+# This is a thin front end over Proxmod::Patch, which carries the reasoning; see
+# its header before touching anything here. The short version is that this is
+# proxmod's escape hatch for the cases where PVE offers no runtime seam, it
+# ships with nothing enabled, and using it trades away the property that makes
+# the rest of proxmod safe across upgrades.
+#
+#   proxmod-patch status [--json]   what specs exist and what the host carries
+#   proxmod-patch converge          make the host match the specs
+#   proxmod-patch apply <id>        apply one enabled spec
+#   proxmod-patch revert <id>       undo one patch
+#   proxmod-patch revert-all        undo everything (what prerm calls on remove)
+#
+# Exit codes: 0 all good, 1 something failed, 64 usage.
+
+use strict;
+use warnings;
+
+use lib '/usr/share/perl5';
+
+use Proxmod::Patch ();
+use JSON::PP ();
+
+our $VERSION = '0.1.0';
+
+my $PREFIX = ($> != 0 && defined $ENV{PROXMOD_TEST_PREFIX})
+    ? $ENV{PROXMOD_TEST_PREFIX} : '';
+
+if ($PREFIX ne '') {
+    # Same arrangement as bin/proxmod-verify: the tests drive the real script
+    # against a temporary tree rather than a mock of it, because a patch engine
+    # that is only exercised through its library is a patch engine whose CLI
+    # can revert the wrong thing.
+    $Proxmod::Patch::STATE_FILE = "$PREFIX/var/lib/proxmod/patches.state";
+    $Proxmod::Patch::BACKUP_DIR = "$PREFIX/var/lib/proxmod/backups";
+    @Proxmod::Patch::SPEC_DIRS  = map { "$PREFIX$_" } @Proxmod::Patch::SPEC_DIRS;
+    @Proxmod::Patch::PATCH_ROOTS = map { "$PREFIX$_" } @Proxmod::Patch::PATCH_ROOTS;
+    @Proxmod::Patch::NEVER      = map { "$PREFIX$_" } @Proxmod::Patch::NEVER;
+    $Proxmod::Patch::OWNER_UID  = $>;
+}
+
+sub usage {
+    print STDERR <<'EOF';
+usage: proxmod-patch <command> [--json]
+
+  status        every patch spec on this host, and whether it is applied
+  converge      apply enabled specs, undo ones that are no longer enabled
+  apply <id>    apply one spec (it must be enabled)
+  revert <id>   undo one patch
+  revert-all    undo every patch proxmod applied
+
+Patching a Proxmox file is proxmod's last resort. Prefer a runtime extension:
+see docs/patching.md for why, and for what breaks at the next upgrade.
+EOF
+    exit 64;
+}
+
+my (@args, $json);
+for my $a (@ARGV) {
+    if ($a eq '--json')     { $json = 1 }
+    elsif ($a =~ /\A--/)    { print STDERR "proxmod-patch: unknown option: $a\n"; usage() }
+    else                    { push @args, $a }
+}
+
+my $cmd = shift(@args) // '';
+my $rc = 0;
+
+if ($cmd eq 'status') {
+    usage() if @args;
+    my $rows = Proxmod::Patch::status();
+    if ($json) {
+        print JSON::PP->new->canonical->pretty->encode({ patches => $rows });
+    } elsif (!@$rows) {
+        print "no patch specs installed, and no patches applied.\n";
+    } else {
+        for my $r (@$rows) {
+            printf "%-32s %s\n", $r->{id},
+                  $r->{orphaned} ? 'APPLIED, but no spec describes it any more'
+                : !$r->{enabled} ? ($r->{applied} ? 'disabled, but still applied' : 'disabled')
+                : $r->{applied}  ? ($r->{drifted} ? 'applied, file has changed since' : 'applied')
+                :                  'ENABLED but not applied';
+            printf "  %s\n", $r->{target} if defined $r->{target};
+            printf "  %s\n", $r->{description} if $r->{description};
+        }
+    }
+
+} elsif ($cmd eq 'converge' || $cmd eq 'revert-all') {
+    usage() if @args;
+    my $out = $cmd eq 'converge'
+        ? Proxmod::Patch::converge()
+        : Proxmod::Patch::revert_all();
+    my $changed = grep { $_->{status} =~ /\A(?:applied|reverted|unpatched)\z/ }
+        @{ $out->{results} };
+    # A summary line with a fixed shape, because proxmod-reapply parses it.
+    # It needs one bit of information — did any file on this host actually
+    # change? — to decide whether the daemons have to be restarted, and
+    # grepping human sentences for it is how that silently stops working.
+    printf "proxmod-patch: changed=%d failed=%d\n", $changed, $out->{failed}
+        if !$json;
+    report($out->{results}, { changed => $changed, failed => $out->{failed} });
+    $rc = $out->{failed} ? 1 : 0;
+
+} elsif ($cmd eq 'apply' || $cmd eq 'revert') {
+    usage() if @args != 1;
+    my $id = $args[0];
+    my $r;
+    if ($cmd eq 'revert') {
+        $r = Proxmod::Patch::revert($id);
+    } else {
+        my ($spec) = grep { $_->{id} eq $id } @{ Proxmod::Patch::load_specs() };
+        $r = $spec ? Proxmod::Patch::apply($spec)
+                   : { status => 'error', message => "no such patch spec: $id" };
+    }
+    $r->{id} = $id;
+    report([$r]);
+    $rc = $r->{status} eq 'error' ? 1 : 0;
+
+} else {
+    usage();
+}
+
+sub report {
+    my ($results, $summary) = @_;
+    if ($json) {
+        print JSON::PP->new->canonical->pretty
+            ->encode({ %{ $summary || {} }, results => $results });
+        return;
+    }
+    if (!@$results) {
+        print "nothing to do.\n";
+        return;
+    }
+    for my $r (@$results) {
+        printf "%-9s %-32s %s\n", $r->{status}, $r->{id}, $r->{message};
+    }
+}
+
+exit $rc;

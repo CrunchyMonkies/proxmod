@@ -1,0 +1,240 @@
+#!/bin/sh
+# proxmod-exec — start a PVE daemon with the Proxmod module injected.
+#
+# Installed as the ExecStart of pvedaemon and pveproxy by a systemd drop-in:
+#
+#     [Service]
+#     ExecStart=
+#     ExecStart=/usr/lib/proxmod/proxmod-exec pveproxy
+#
+# It reads the daemon's REAL command out of the base unit file at start time,
+# rather than hardcoding it, so it keeps working when Proxmox changes the
+# invocation, its arguments, or perl's flags. It then re-executes that command
+# through the interpreter named in the script's own shebang, adding one thing:
+# -MProxmod.
+#
+# WHY -M AND NOT AN ENVIRONMENT VARIABLE. Both daemons are `#!/usr/bin/perl -T`.
+# Taint mode makes perl ignore PERL5LIB and PERL5OPT, so an Environment= drop-in
+# is inert — the module never loads, the daemon starts perfectly, and nothing
+# says why the extensions are missing. A command-line -M is the only way in, and
+# the module must live in a default @INC directory. See [PVE-F-002].
+#
+# THE PRIME DIRECTIVE. A missing extension is acceptable; a dead pvedaemon or
+# pveproxy is not. Every branch below that cannot proceed safely starts the
+# daemon EXACTLY as Proxmox ships it. That means failure here is silent by
+# design, which is why proxmod-verify exists and why the documentation says to
+# monitor it.
+
+set -u
+
+MODULE=Proxmod
+
+# Honoured only when we are not root, so that it is inert in production: systemd
+# starts these units as root. It exists so t/08 can exercise the guard below
+# against a temporary tree instead of the real /usr.
+prefix=
+if [ "$(id -u)" != 0 ] && [ -n "${PROXMOD_TEST_PREFIX:-}" ]; then
+    prefix=$PROXMOD_TEST_PREFIX
+fi
+
+DISABLED="$prefix/etc/proxmod/disabled"
+
+# Everything on this list is loaded, or names something loaded, as root inside
+# pvedaemon. A file here that a non-root user can write is unauthenticated root
+# code execution on the host, so the wrapper refuses to inject when it finds one
+# — the extension disappears, the daemon starts clean, and the reason is in the
+# journal.
+GUARDED_PATHS="
+$prefix/usr/share/perl5/Proxmod.pm
+$prefix/usr/share/perl5/Proxmod
+$prefix/usr/lib/proxmod
+$prefix/usr/share/proxmod
+$prefix/usr/share/proxmod/www
+$prefix/usr/share/proxmod/extensions.d
+$prefix/etc/proxmod
+$prefix/etc/proxmod/extensions.d
+"
+
+dry_run=0
+if [ "${1:-}" = '--dry-run' ]; then
+    dry_run=1
+    shift
+fi
+
+log() { printf 'proxmod: %s\n' "$*" >&2; }
+
+# The single exit point. In a dry run it prints the command it would have become
+# instead of becoming it, which is what makes this script testable at all.
+run() {
+    if [ "$dry_run" = 1 ]; then
+        printf '%s\n' "$*"
+        exit 0
+    fi
+    exec "$@"
+}
+
+svc=${1:-}
+case "$svc" in
+    pvedaemon|pveproxy) ;;
+    *)
+        # Not a fail-safe case: there is no daemon to fall back to starting.
+        log "error: '$svc' is not a daemon proxmod wraps; refusing to start anything"
+        exit 64
+        ;;
+esac
+
+# Last-resort invocation, used only when the unit file cannot be read at all.
+# This has been PVE's ExecStart across several major versions, but it is a guess
+# and proxmod-verify reports when the live ExecStart is not what we expect.
+LAST_RESORT_BIN="$prefix/usr/bin/$svc"
+
+# ---------------------------------------------------------------------------
+# What is the daemon's real command?
+# ---------------------------------------------------------------------------
+
+# systemctl is authoritative — it accounts for an administrator having replaced
+# the whole unit under /etc. Reading the file directly is the fallback for an
+# environment where D-Bus is not answering.
+find_unit() {
+    # Under test we look only inside the prefix; asking the real systemd would
+    # find the real unit and defeat the point.
+    if [ -z "$prefix" ]; then
+        _u=$(systemctl show -p FragmentPath --value "${svc}.service" 2>/dev/null) || _u=
+        if [ -n "$_u" ] && [ -r "$_u" ]; then
+            printf '%s\n' "$_u"
+            return 0
+        fi
+    fi
+    for _d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -r "$prefix$_d/${svc}.service" ]; then
+            printf '%s\n' "$prefix$_d/${svc}.service"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Deliberately the BASE unit only, never the merged configuration: the merged
+# ExecStart is our own drop-in, and following it would recurse.
+#
+# The strip of leading [-+!@:] drops systemd's execution-prefix characters. The
+# last non-empty assignment wins, matching systemd's own rule that a bare
+# `ExecStart=` resets the list.
+read_exec_start() {
+    sed -n 's/^[[:space:]]*ExecStart=//p' "$1" 2>/dev/null \
+        | sed 's/^[-+!@:]*//' \
+        | grep -v '^[[:space:]]*$' \
+        | tail -n 1
+}
+
+unit=$(find_unit) || unit=
+if [ -z "$unit" ]; then
+    log "warn: cannot find the unit file for $svc; starting it unmodified"
+    run "$LAST_RESORT_BIN" start
+fi
+
+cmd=$(read_exec_start "$unit")
+if [ -z "$cmd" ]; then
+    log "warn: no ExecStart in $unit; starting $svc unmodified"
+    run "$LAST_RESORT_BIN" start
+fi
+
+# We word-split the command below, so anything needing real parsing — quoting,
+# or a systemd % specifier — has to be refused rather than mangled.
+case "$cmd" in
+    *\"* | *\'* | *\$* | *%*)
+        log "warn: ExecStart in $unit uses quoting or specifiers this wrapper" \
+            "cannot parse safely; starting $svc unmodified"
+        run "$LAST_RESORT_BIN" start
+        ;;
+esac
+
+# shellcheck disable=SC2086 # deliberate: splitting the command into arguments
+set -- $cmd
+script=$1
+shift
+
+if [ ! -x "$script" ]; then
+    log "warn: $script from $unit is not executable; starting $svc unmodified"
+    run "$LAST_RESORT_BIN" start
+fi
+
+# ---------------------------------------------------------------------------
+# Should we inject at all?
+# ---------------------------------------------------------------------------
+
+if [ -e "$DISABLED" ]; then
+    log "disabled by $DISABLED; starting $svc unmodified"
+    run "$script" "$@"
+fi
+
+# -perm -0020 / -0002 are "group-writable" and "other-writable". A path that is
+# either, or is not owned by root, fails the check.
+owner_test='-user root'
+if [ -n "$prefix" ]; then
+    # Under test the tree belongs to whoever is running the tests, so check for
+    # that user instead; the writability half of the guard is unchanged, and it
+    # is the half the integration test exercises on a live host.
+    owner_test="-uid $(id -u)"
+fi
+
+# shellcheck disable=SC2086 # both are deliberately split into find arguments
+unsafe=$(find $GUARDED_PATHS -maxdepth 1 \
+    \( ! $owner_test -o -perm -0020 -o -perm -0002 \) -print 2>/dev/null | head -n 5)
+
+if [ -n "$unsafe" ]; then
+    log "error: refusing to inject into $svc: these run as root inside it and" \
+        "are writable by someone who is not root:"
+    printf '%s\n' "$unsafe" | while IFS= read -r bad; do
+        log "error:   $bad"
+    done
+    run "$script" "$@"
+fi
+
+# ---------------------------------------------------------------------------
+# Re-execute through the interpreter, with the module added.
+# ---------------------------------------------------------------------------
+
+shebang=$(head -n 1 "$script" 2>/dev/null) || shebang=
+case "$shebang" in
+    '#!'*perl*) ;;
+    *)
+        log "warn: $script is not a perl script (first line: ${shebang:-<empty>});" \
+            "starting $svc unmodified"
+        run "$script" "$@"
+        ;;
+esac
+
+interp=$(printf '%s\n' "$shebang" | sed 's|^#!||' | awk '{ print $1 }')
+flags=$(printf '%s\n' "$shebang" | sed 's|^#![^ ]*||')
+
+if [ ! -x "$interp" ]; then
+    log "warn: interpreter $interp from $script's shebang is not executable;" \
+        "starting $svc unmodified"
+    run "$script" "$@"
+fi
+
+# In production the module is in a default @INC directory [PVE-F-003] and this
+# is empty. Under test it points perl at the temporary tree.
+inc_flag=
+if [ -n "$prefix" ]; then
+    inc_flag="-I$prefix/usr/share/perl5"
+fi
+
+# Can this interpreter, with these exact flags, load the module at all? -c so
+# that compilation happens but the INIT block does not run: this is a probe, not
+# a boot. It catches a module that is missing, truncated by an interrupted
+# upgrade, or unloadable under -T — cases where injecting would kill the daemon.
+#
+# It deliberately does NOT probe Proxmod::Boot. Boot is loaded at runtime inside
+# an eval, so a broken Boot costs the extensions and not the daemon; refusing to
+# start injected over it would be an overreaction.
+#
+# shellcheck disable=SC2086 # $flags is a shebang flag list, split on purpose
+if ! "$interp" $flags $inc_flag -M"$MODULE" -c -e 1 >/dev/null 2>&1; then
+    log "warn: $MODULE will not load under '$interp$flags'; starting $svc unmodified"
+    run "$script" "$@"
+fi
+
+# shellcheck disable=SC2086
+run "$interp" $flags $inc_flag -M"$MODULE" "$script" "$@"

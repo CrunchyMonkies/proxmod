@@ -1,0 +1,39 @@
+# Build products. debhelper/dpkg-buildpackage write these into the source tree
+# and, for the .deb itself, into the *parent* directory.
+/debian/proxmod/
+/debian/.debhelper/
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log
+/debian/*.debhelper
+/debian/debhelper-build-stamp
+# The staging directory dpkg-buildpackage creates, named after the binary
+# package. Not a wildcard: /examples/*/debian/*/ would also swallow
+# debian/source/, which is real source.
+/examples/proxmod-example-hello/debian/proxmod-example-hello/
+/examples/*/debian/.debhelper/
+/examples/*/debian/files
+/examples/*/debian/*.substvars
+/examples/*/debian/*.debhelper*
+/examples/*/debian/debhelper-build-stamp
+/build/
+*.deb
+*.buildinfo
+*.changes
+
+# Test images. The QEMU harness needs a Proxmox installer ISO and a golden
+# qcow2; both are hundreds of megabytes and neither belongs in git. Point the
+# harness at them with PROXMOD_PVE_ISO / PROXMOD_PVE_IMAGE instead.
+*.iso
+*.qcow2
+*.img
+/test/qemu/.run/
+
+# Scratch
+*.swp
+*~
+.DS_Store
+
+# Tooling state, not project content
+/.omc/
+/.serena/

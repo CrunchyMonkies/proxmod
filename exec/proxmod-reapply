@@ -1,0 +1,449 @@
+#!/bin/sh
+# proxmod-reapply — converge the host onto proxmod's intended systemd state.
+#
+# This is the whole update-survival story in one idempotent script. It is run:
+#
+#   * from proxmod's own postinst, on configure
+#   * from proxmod's dpkg trigger, when any package writes into the paths
+#     listed in debian/proxmod.triggers — which is how an extension package
+#     gets loaded without shipping a single maintainer script
+#   * from proxmod-verify.service at boot, as a safety net
+#   * by hand, via `proxmodctl reapply`
+#
+# It must therefore be safe to run at any moment, any number of times, and cost
+# nothing when there is nothing to do. In particular it MUST NOT restart the
+# daemons on a run where nothing changed: pmxxpuiov's APT hook restarted
+# pveproxy on every apt invocation, which is both a visible interruption and a
+# good way to teach an administrator to distrust the package.
+#
+# WHY A TRIGGER AND NOT AN APT HOOK. dpkg triggers fire on `dpkg -i` as well as
+# on apt, fire only when a watched path was actually touched, are batched once
+# per dpkg run, and are ordered by dpkg itself. An /etc/apt/apt.conf.d hook has
+# none of those properties. pve-manager itself ships
+# `interest-noawait /usr/share/perl5/PVE` [PVE-F-010], so this is also the
+# mechanism Proxmox chose.
+#
+# THE PRIME DIRECTIVE. A missing extension is acceptable; a dead pvedaemon or
+# pveproxy is not. If a daemon does not come back after a restart, this script
+# removes proxmod's own drop-ins and restarts again without them, leaving a host
+# running stock Proxmox and an explanation in the journal.
+
+set -u
+
+# Honoured only when we are not root, so it is inert in production: dpkg,
+# systemd and the trigger all run this as root. It exists so t/09 can converge a
+# temporary tree instead of the real /.
+prefix=
+if [ "$(id -u)" != 0 ] && [ -n "${PROXMOD_TEST_PREFIX:-}" ]; then
+    prefix=$PROXMOD_TEST_PREFIX
+fi
+
+SRC_DIR="$prefix/usr/share/proxmod/systemd"   # what we want, package-owned
+DST_DIR="$prefix/etc/systemd/system"          # where systemd reads drop-ins
+STATE_DIR="$prefix/var/lib/proxmod"
+LOCK="$STATE_DIR/reapply.lock"
+DISABLED="$prefix/etc/proxmod/disabled"
+INSTALL_MODE="$prefix/proxmox_install_mode"
+VERIFY="$prefix/usr/sbin/proxmod-verify"
+PATCH="$prefix/usr/lib/proxmod/proxmod-patch"
+
+# Only files matching this are ever written or deleted under DST_DIR. Another
+# framework's drop-in in the same directory is none of our business, and
+# deleting one would be the kind of collateral damage this project exists to
+# argue against.
+OURS='10-proxmod.conf'
+
+trigger=0
+force=0
+quiet=0
+remove=0
+
+usage() {
+    cat <<'EOF'
+usage: proxmod-reapply [--trigger] [--force] [--remove] [--quiet]
+
+  --trigger  called from the dpkg trigger: always exits 0, so that a proxmod
+             problem can never wedge an apt run that is upgrading other things
+  --force    restart the wrapped daemons even if nothing changed
+  --remove   converge to "proxmod not installed": drop-ins removed, daemons
+             restarted stock. Used by prerm on remove, never on upgrade
+  --quiet    only report problems
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --trigger) trigger=1; shift ;;
+        --force)   force=1; shift ;;
+        --remove)  remove=1; shift ;;
+        --quiet)   quiet=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'proxmod-reapply: unknown argument: %s\n' "$1" >&2; usage >&2; exit 64 ;;
+    esac
+done
+
+log()  { printf 'proxmod-reapply: %s\n' "$*" >&2; }
+say()  { [ "$quiet" = 1 ] || log "$@"; }
+
+# systemctl is called through this so that t/09 can put a recording stub on PATH
+# and so that a container without systemd degrades to a no-op rather than a pile
+# of errors.
+have_systemd() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    [ -d /run/systemd/system ] || [ -n "$prefix" ] || return 1
+    return 0
+}
+
+sctl() {
+    if ! have_systemd; then
+        say "no systemd here; skipping: systemctl $*"
+        return 0
+    fi
+    systemctl "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Which units do we wrap?
+#
+# Derived from the directory names the package installed, never hardcoded, so
+# adding a third daemon later is a packaging change and not a code change.
+# ---------------------------------------------------------------------------
+wanted_units() {
+    for _d in "$SRC_DIR"/*.service.d; do
+        [ -d "$_d" ] || continue
+        _b=${_d##*/}
+        printf '%s\n' "${_b%.d}"
+    done
+}
+
+# Units we have a drop-in installed for, whether or not we still want it. This
+# is what makes removing a daemon from the wrapped set actually converge.
+installed_units() {
+    for _d in "$DST_DIR"/*.service.d; do
+        [ -f "$_d/$OURS" ] || continue
+        _b=${_d##*/}
+        printf '%s\n' "${_b%.d}"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Converge the drop-ins. Sets `changed` to 1 if the on-disk state moved.
+# ---------------------------------------------------------------------------
+changed=0
+
+install_dropin() { # $1 = unit name
+    _unit=$1
+    _src="$SRC_DIR/$_unit.d/$OURS"
+    _dst="$DST_DIR/$_unit.d/$OURS"
+
+    [ -f "$_src" ] || return 0
+
+    if [ -f "$_dst" ] && cmp -s "$_src" "$_dst"; then
+        return 0
+    fi
+
+    mkdir -p "$DST_DIR/$_unit.d" || { log "error: cannot create $DST_DIR/$_unit.d"; return 1; }
+
+    # Write and rename, so a drop-in is never half-written. systemd reads these
+    # at daemon-reload, but also whenever a unit is started, and a truncated
+    # ExecStart= line would mean a daemon that cannot start at all.
+    _tmp="$_dst.proxmod-tmp.$$"
+    if ! cp "$_src" "$_tmp"; then
+        log "error: cannot write $_tmp"
+        rm -f "$_tmp"
+        return 1
+    fi
+    chmod 0644 "$_tmp"
+    if ! mv -f "$_tmp" "$_dst"; then
+        log "error: cannot install $_dst"
+        rm -f "$_tmp"
+        return 1
+    fi
+
+    say "installed $_dst"
+    changed=1
+    return 0
+}
+
+remove_dropin() { # $1 = unit name
+    _unit=$1
+    _dst="$DST_DIR/$_unit.d/$OURS"
+
+    [ -f "$_dst" ] || return 0
+
+    if ! rm -f "$_dst"; then
+        log "error: cannot remove $_dst"
+        return 1
+    fi
+    say "removed $_dst"
+    changed=1
+
+    # Only if we emptied it. Another package may own a drop-in in the same
+    # directory, and systemd itself owns the directory for units that have one.
+    rmdir "$DST_DIR/$_unit.d" 2>/dev/null || true
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Is the live daemon actually running with proxmod in it?
+#
+# Delegated to proxmod-verify, whose primary gate is the journal of the RUNNING
+# process rather than a fresh perl — the distinction that would have caught
+# pve-token-copy's taint-mode bug, where its own check passed while the endpoint
+# had never once loaded.
+#
+# If proxmod-verify is not installed we return "healthy", because the
+# alternative is restarting the daemons on every trigger on the strength of a
+# check we could not perform.
+# ---------------------------------------------------------------------------
+# --live-only deliberately narrows the question. The full report also covers
+# HTTP reachability and ExecReload drift, both of which are real problems and
+# neither of which a restart fixes — widening this gate would turn a 404 on an
+# extension asset into a hypervisor daemon bounce on every trigger.
+live_looks_right() {
+    [ -x "$VERIFY" ] || return 0
+    "$VERIFY" --quiet --live-only >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Restart, then make sure we did not break anything.
+#
+# try-restart, not restart: a daemon that is deliberately stopped stays stopped.
+# ---------------------------------------------------------------------------
+restart_units() { # $@ = units
+    _failed=
+    for _u in "$@"; do
+        say "restarting $_u"
+        sctl try-restart "$_u" || log "warn: try-restart $_u reported failure"
+    done
+
+    for _u in "$@"; do
+        # is-active is checked after every unit has been asked to restart, so a
+        # slow one is not mistaken for a broken one by the next unit's check.
+        if ! unit_ok "$_u"; then
+            _failed="$_failed $_u"
+        fi
+    done
+
+    [ -z "$_failed" ] && return 0
+    printf '%s\n' "$_failed"
+    return 1
+}
+
+# A unit counts as healthy if it is active, or if it was not running before we
+# started (inactive after try-restart on an inactive unit is the correct
+# outcome, not a failure).
+unit_ok() { # $1 = unit
+    have_systemd || return 0
+    # is-active exits non-zero for anything but "active" while still printing
+    # the state, which is the part we want.
+    _state=$(systemctl is-active "$1" 2>/dev/null) || true
+    case "$_state" in
+        active|activating|inactive) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The self-heal. Reached only when a daemon did not come back, which is the one
+# outcome this project treats as unacceptable.
+panic_unwrap() { # $1 = the units that failed
+    log "error: these units did not come back after a proxmod restart:$1"
+    log "error: removing proxmod's drop-ins and restarting them stock."
+    log "error: proxmod is now inert on this host. Fix the cause, then run"
+    log "error: 'proxmodctl reapply' to put it back."
+
+    for _u in $(installed_units); do
+        remove_dropin "$_u"
+    done
+    sctl daemon-reload || true
+    for _u in $1; do
+        sctl restart "$_u" || log "error: $_u will not start even without proxmod"
+    done
+}
+
+# Converge the managed patch facility. On every host that has not deliberately
+# enabled a patch spec — which is every host, since proxmod ships none enabled —
+# this walks two empty directories and returns having changed nothing.
+#
+# Two properties matter here and both are deliberate:
+#
+#   * A patch failure never reaches `return 1` in main's convergence path, and
+#     so can never reach panic_unwrap. A malformed spec must not be able to tear
+#     out proxmod's drop-ins and take the whole framework down with it.
+#   * A patch that actually changed a file does count as a reason to restart:
+#     the files it edits are Perl modules compiled at daemon start and
+#     JavaScript cached by the browser. It is set into `patched` for the restart
+#     decision below rather than acted on here.
+#
+# Sets `patched` to 1 if anything on disk changed, and `patch_failed` to 1 if a
+# spec could not be applied or undone.
+converge_patches() {
+    patched=0
+    patch_failed=0
+    [ -x "$PATCH" ] || return 0
+
+    _pout=$("$PATCH" converge 2>&1) || patch_failed=1
+
+    # The fixed summary line proxmod-patch prints for exactly this reader.
+    case "$_pout" in
+        *'changed=0 failed=0'*) return 0 ;;
+    esac
+
+    printf '%s\n' "$_pout" | while IFS= read -r _line; do
+        [ -n "$_line" ] && log "patch: $_line"
+    done
+
+    case "$_pout" in
+        *'changed=0'*) ;;
+        *) patched=1 ;;
+    esac
+    if [ "$patch_failed" = 1 ]; then
+        log "error: a managed patch could not be applied or undone."
+        log "error: run 'proxmodctl patch status'. proxmod itself is unaffected."
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+main() {
+    # The PVE installer sets this while it builds the system. Restarting a
+    # daemon mid-install is at best useless. pve-manager's own postinst has the
+    # same guard [PVE-F-005].
+    if [ -e "$INSTALL_MODE" ]; then
+        say "$INSTALL_MODE exists; the PVE installer is running, doing nothing"
+        return 0
+    fi
+
+    # NOTE: nothing in this script reads or writes anywhere under /etc/pve.
+    # That is pmxcfs, a FUSE filesystem which is not mounted early at boot and
+    # is routinely unmounted during upgrades — exactly when this runs.
+
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+    if [ "$remove" = 1 ]; then
+        _units=$(installed_units)
+        for _u in $_units; do
+            remove_dropin "$_u"
+        done
+        [ "$changed" = 1 ] || { say "no proxmod drop-ins installed; nothing to do"; return 0; }
+        sctl daemon-reload || log "warn: daemon-reload failed"
+        # Deliberately no self-heal here: we have just removed the only thing
+        # proxmod contributes. A daemon that will not start now is not ours.
+        for _u in $_units; do
+            sctl try-restart "$_u" || log "warn: try-restart $_u reported failure"
+        done
+        return 0
+    fi
+
+    # Install what we want, remove what we no longer want. The second loop is
+    # what converges after a version of proxmod stops wrapping some unit.
+    # Flattened to a single space-separated line: the "do we still want this
+    # one?" test below is a glob match against " $_want ", and a newline
+    # between two units would make every unit but the last fail to match — and
+    # so be removed immediately after being installed.
+    _want=$(wanted_units | tr '\n' ' ')
+    if [ -z "$_want" ]; then
+        log "warn: no drop-ins found under $SRC_DIR; proxmod will not load"
+    fi
+    for _u in $_want; do
+        install_dropin "$_u" || return 1
+    done
+    for _u in $(installed_units); do
+        case " $_want " in
+            *" $_u "*) ;;
+            *) remove_dropin "$_u" ;;
+        esac
+    done
+
+    # Only when something moved. A daemon-reload on every trigger is cheap but
+    # not free, and its absence here is a useful signal in `systemd-analyze`.
+    if [ "$changed" = 1 ]; then
+        sctl daemon-reload || { log "error: daemon-reload failed"; return 1; }
+    fi
+
+    if [ -e "$DISABLED" ]; then
+        # The kill switch is honoured by proxmod-exec at start time, so the
+        # drop-ins stay in place and correct — they simply pass the daemon
+        # through unmodified. What we must not do is restart the daemons to
+        # chase a "not loaded" verdict that is the intended state.
+        say "disabled by $DISABLED; drop-ins converged, not restarting"
+        # Patches are not converged while proxmod is disabled either. The kill
+        # switch means "proxmod does nothing on this host", and editing another
+        # package's files is emphatically doing something. Existing patches are
+        # left in place rather than reverted: `proxmodctl disable` is what an
+        # administrator reaches for at 3am, and it must be one restart away from
+        # being undone, not a rewrite of files across the system.
+        return 0
+    fi
+
+    converge_patches
+
+    _why=
+    if [ "$force" = 1 ]; then
+        _why='--force'
+    elif [ "$changed" = 1 ]; then
+        _why='the drop-ins changed'
+    elif [ "$patched" = 1 ]; then
+        _why='a managed patch changed a file on disk'
+    elif ! live_looks_right; then
+        _why='the running daemons are not loading proxmod'
+    fi
+
+    if [ -z "$_why" ]; then
+        say 'already converged; not restarting'
+        return "$patch_failed"
+    fi
+
+    say "restarting the wrapped daemons: $_why"
+    # shellcheck disable=SC2086 # $_want is a newline-separated unit list
+    _failed=$(restart_units $_want) || {
+        panic_unwrap "$_failed"
+        return 1
+    }
+
+    say 'converged'
+    # Non-zero only for the patch facility's own failures, and only here, once
+    # every daemon is back up. It makes the problem visible in `systemctl
+    # status proxmod-verify` and to monitoring without ever having stood
+    # between the drop-ins and the daemons.
+    return "$patch_failed"
+}
+
+# ---------------------------------------------------------------------------
+# Serialize. Two apt runs, or a trigger racing the boot-time unit, would
+# otherwise both decide a restart is needed and fight over it.
+#
+# -w rather than -n: the second caller should wait its turn and then find
+# nothing to do, not skip the work and leave the host unconverged.
+# ---------------------------------------------------------------------------
+#
+# The lock file is proved writable before `exec` opens it: a failed redirection
+# on `exec` makes a non-interactive shell exit outright, which would turn "the
+# state directory is missing" into "the trigger died".
+rc=0
+if command -v flock >/dev/null 2>&1 \
+    && mkdir -p "$STATE_DIR" 2>/dev/null \
+    && : >>"$LOCK" 2>/dev/null
+then
+    exec 9>>"$LOCK"
+    if flock -w 120 9; then
+        main || rc=$?
+    else
+        log 'warn: timed out waiting for another proxmod-reapply; skipping this run'
+        rc=1
+    fi
+else
+    main || rc=$?
+fi
+
+# A non-zero exit from a dpkg trigger leaves the package in a half-configured
+# state and can stop an entire `apt dist-upgrade` — including the security
+# updates that have nothing to do with us. The failure is already in the
+# journal, and proxmod-verify will report it.
+if [ "$trigger" = 1 ] && [ "$rc" != 0 ]; then
+    log 'the above failed, but exiting 0: a trigger must not wedge dpkg.'
+    log 'run proxmod-verify for the current state.'
+    rc=0
+fi
+
+exit "$rc"

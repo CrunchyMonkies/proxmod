@@ -1,0 +1,494 @@
+#!/usr/bin/perl
+# proxmod-verify — is proxmod actually working on this host, right now?
+#
+# proxmod fails silently by design. Every layer degrades toward stock Proxmox,
+# which means a host where nothing works looks exactly like a host where
+# nothing is installed: no error, no downtime, no clue. That is the correct
+# behaviour for a hypervisor and a terrible property for an administrator, so
+# this tool exists to turn silence back into a report.
+#
+# THE THING THIS TOOL GETS RIGHT, AND ITS PREDECESSORS DID NOT.
+#
+# The primary gate is the JOURNAL OF THE RUNNING PROCESS, read from the unit's
+# last start onward — not a fresh `perl -MProxmod -e1`. Those two answers come
+# apart exactly when it matters. A comparable tool for a single endpoint shipped
+# a check that ran a new perl, found the module loadable, and reported success;
+# the module had in fact never once loaded inside the daemon, because taint mode
+# ignores PERL5LIB [PVE-F-002] and the injection was never reaching it. A fresh
+# interpreter cannot answer "is the code that is serving requests our code".
+# Only the running process's own log can.
+#
+#   proxmod-verify                 # human-readable report
+#   proxmod-verify --json          # for monitoring
+#   proxmod-verify --quiet         # exit status only
+#   proxmod-verify --live-only     # only the live-load gate (what reapply asks)
+#
+# Exit status: 0 healthy, 1 something is wrong, 64 bad usage.
+#
+# The docs state the monitoring obligation that follows from all of this: wire
+# `proxmod-verify --json` into monitoring, and re-run it after every
+# pve-manager upgrade.
+
+use strict;
+use warnings;
+
+our $VERSION = '0.1.0';
+
+# Honoured only for a non-root caller, so it is inert in production. t/10 uses
+# it to point every path at a temporary tree.
+my $PREFIX = ($> != 0 && defined $ENV{PROXMOD_TEST_PREFIX})
+    ? $ENV{PROXMOD_TEST_PREFIX} : '';
+
+# Not tainted-mode. This runs as root from a terminal, a unit and a cron job,
+# and reaches for curl and journalctl; the useful hardening here is a fixed
+# PATH rather than -T, which would mostly produce untainting boilerplate.
+#
+# The one exception is the test prefix, which already required a non-root
+# caller to take effect: there, the harness's PATH is kept so that systemctl,
+# journalctl and curl can be stubbed. Pinning PATH unconditionally would make
+# this tool the one part of proxmod that cannot be tested without a PVE host —
+# and it is the part whose failure mode is "reports success while nothing
+# works", which is precisely what needs tests.
+if (!$PREFIX) {
+    $ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin';
+}
+delete @ENV{qw(IFS CDPATH ENV BASH_ENV)};
+
+my $SRC_DIR    = "$PREFIX/usr/share/proxmod/systemd";
+my $DROPIN_DIR = "$PREFIX/etc/systemd/system";
+my $DROPIN     = '10-proxmod.conf';
+my $WRAPPER    = '/usr/lib/proxmod/proxmod-exec';
+my $DISABLED   = "$PREFIX/etc/proxmod/disabled";
+my $WWW_DIR    = "$PREFIX/usr/share/proxmod/www";
+
+# Contract with Proxmod::Log and Proxmod::Boot. Changing either of these in one
+# place and not the other is how a verify tool starts lying.
+my $LOG_PREFIX    = 'proxmod:';
+my $BOOTED_MARKER = 'booted';
+
+my $BASE_URL   = 'https://127.0.0.1:8006';
+my $LOADER_URL = '/proxmod/loader.js';
+
+# ---------------------------------------------------------------------------
+my %opt = (json => 0, quiet => 0, live_only => 0, http => 1, url => $BASE_URL);
+
+while (@ARGV) {
+    my $a = shift @ARGV;
+    if    ($a eq '--json')      { $opt{json} = 1 }
+    elsif ($a eq '--quiet')     { $opt{quiet} = 1 }
+    elsif ($a eq '--live-only') { $opt{live_only} = 1 }
+    elsif ($a eq '--no-http')   { $opt{http} = 0 }
+    elsif ($a eq '--url')       { $opt{url} = shift @ARGV // usage(64) }
+    elsif ($a eq '-h' || $a eq '--help') { usage(0) }
+    else { print STDERR "proxmod-verify: unknown argument: $a\n"; usage(64) }
+}
+
+sub usage {
+    my ($rc) = @_;
+    my $fh = $rc ? \*STDERR : \*STDOUT;
+    print {$fh} <<'EOF';
+usage: proxmod-verify [--json] [--quiet] [--live-only] [--no-http] [--url URL]
+
+  --json       machine-readable report on stdout
+  --quiet      no output; the exit status is the answer
+  --live-only  check only whether the running daemons have proxmod loaded.
+               This is the narrow question proxmod-reapply asks before it
+               decides to restart anything, and it must not be widened: a
+               failing HTTP check is not a reason to bounce pvedaemon.
+  --no-http    skip the checks that talk to the live web interface
+  --url URL    base URL of the local pveproxy (default https://127.0.0.1:8006)
+
+exit: 0 healthy, 1 a check failed, 64 bad usage
+EOF
+    exit $rc;
+}
+
+# ---------------------------------------------------------------------------
+# Findings. Each is {id, level, title, detail}. `error` decides the exit status;
+# `warn` is reported but does not, because proxmod degrading is the designed
+# behaviour and an administrator who chose to disable an extension should not
+# get a red monitoring alert for it.
+# ---------------------------------------------------------------------------
+my @findings;
+
+sub finding {
+    my ($id, $level, $title, $detail) = @_;
+    push @findings, { id => $id, level => $level, title => $title,
+                      detail => defined $detail ? $detail : '' };
+    return;
+}
+
+sub ok_   { finding($_[0], 'ok',    $_[1], $_[2]) }
+sub warn_ { finding($_[0], 'warn',  $_[1], $_[2]) }
+sub err_  { finding($_[0], 'error', $_[1], $_[2]) }
+sub info_ { finding($_[0], 'info',  $_[1], $_[2]) }
+
+# Run a command without a shell. Returns ($exit_status, $stdout). A missing
+# binary is a defined outcome (-1), not a die: this tool has to produce a report
+# on a broken host, which is the only kind of host it is ever run on.
+sub run_cmd {
+    my (@cmd) = @_;
+    my $pid = open(my $fh, '-|');
+    return (-1, '') if !defined $pid;
+    if (!$pid) {
+        open(STDERR, '>', '/dev/null');
+        exec { $cmd[0] } @cmd;
+        exit 127;
+    }
+    local $/;
+    my $out = <$fh>;
+    close($fh);
+    return ($? >> 8, defined $out ? $out : '');
+}
+
+sub have {
+    my ($bin) = @_;
+    for my $d (split /:/, $ENV{PATH}) {
+        return 1 if -x "$d/$bin";
+    }
+    return 0;
+}
+
+# Which units should be wrapped? Derived from what the package installed, so
+# this tool never disagrees with proxmod-reapply about the answer.
+sub wanted_units {
+    my @u;
+    for my $d (sort glob("$SRC_DIR/*.service.d")) {
+        next if !-d $d;
+        my ($base) = ($d =~ m{([^/]+)\.d\z});
+        push @u, $base if defined $base;
+    }
+    return @u;
+}
+
+# ---------------------------------------------------------------------------
+# 1. Is proxmod installed and switched on at all?
+# ---------------------------------------------------------------------------
+my $disabled = -e $DISABLED;
+my @units = wanted_units();
+
+sub check_installed {
+    if (!@units) {
+        err_('installed', 'no systemd drop-ins are shipped',
+            "nothing under $SRC_DIR: proxmod cannot load into any daemon");
+        return;
+    }
+
+    my @missing = grep { !-f "$DROPIN_DIR/$_.d/$DROPIN" } @units;
+    if (@missing) {
+        err_('installed', 'the systemd drop-ins are not in place',
+            'missing for: ' . join(', ', @missing)
+                . " — run 'proxmodctl reapply'");
+    }
+    else {
+        ok_('installed', 'systemd drop-ins in place',
+            join(', ', @units));
+    }
+
+    if ($disabled) {
+        # Not a failure. Someone made this choice, and the whole point of the
+        # kill switch is that it is respected without complaint.
+        info_('disabled', 'proxmod is disabled by the kill switch',
+            "$DISABLED exists; the daemons run exactly as Proxmox ships them");
+    }
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# 2. Drift: does the LIVE unit still resolve to our wrapper?
+#
+# This is the check for another package having won the ExecStart= race. Two
+# frameworks that both override ExecStart= in a drop-in do not compose: the one
+# whose file sorts last wins outright and the other silently stops loading. That
+# is a real limitation, shared with the prior art, and the honest response is to
+# detect it rather than pretend it cannot happen.
+# ---------------------------------------------------------------------------
+sub check_drift {
+    return if !have('systemctl');
+
+    for my $u (@units) {
+        my (undef, $start)  = run_cmd('systemctl', 'show', '-p', 'ExecStart',  '--value', $u);
+        my (undef, $reload) = run_cmd('systemctl', 'show', '-p', 'ExecReload', '--value', $u);
+
+        if (index($start, $WRAPPER) < 0) {
+            err_("drift.$u", "$u does not start through proxmod",
+                "the live ExecStart does not mention $WRAPPER. Another package's"
+                    . ' drop-in may have overridden it; check'
+                    . " 'systemctl cat $u'");
+            next;
+        }
+
+        # Without the ExecReload override, PVE's own upgrade path — which
+        # prefers reload-or-try-restart [PVE-F-005] — quietly unloads proxmod
+        # on exactly the event proxmod exists to survive.
+        if ($reload !~ /\brestart\b/) {
+            warn_("reload.$u", "$u will lose proxmod on reload",
+                "ExecReload is not proxmod's restart override. A plain"
+                    . " 'systemctl reload $u' will drop the injection.");
+            next;
+        }
+
+        ok_("drift.$u", "$u starts through proxmod and reloads safely");
+    }
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# 3. THE PRIMARY GATE. What does the running daemon's own journal say?
+#
+# Scoped to the current invocation of the unit via ExecMainStartTimestamp, so a
+# `booted` line from a process that has since died and been replaced by an
+# unwrapped one cannot be mistaken for the truth.
+# ---------------------------------------------------------------------------
+my $live_ok = 1;
+
+sub check_live {
+    if (!have('systemctl') || !have('journalctl')) {
+        $live_ok = 0;
+        warn_('live', 'cannot read the journal',
+            'systemctl or journalctl is missing; the authoritative check could not run');
+        return;
+    }
+
+    for my $u (@units) {
+        my (undef, $active) = run_cmd('systemctl', 'is-active', $u);
+        chomp $active;
+
+        if ($active ne 'active') {
+            # A stopped daemon is not proxmod's failure to report, but it does
+            # mean we have nothing to check.
+            info_("live.$u", "$u is not running", "state: $active");
+            next;
+        }
+
+        my (undef, $since) = run_cmd('systemctl', 'show', '-p',
+            'ExecMainStartTimestamp', '--value', $u);
+        chomp $since;
+
+        my @jcmd = ('journalctl', '-u', $u, '-o', 'cat', '--no-pager');
+        push @jcmd, ('--since', $since) if length $since;
+        my (undef, $journal) = run_cmd(@jcmd);
+
+        my @ours = grep { index($_, $LOG_PREFIX) == 0 } split /\n/, $journal;
+        my ($booted) = grep { / \Q$BOOTED_MARKER\E / } @ours;
+
+        if (!defined $booted) {
+            if ($disabled) {
+                # Expected, and the reason --live-only must know about the
+                # kill switch: otherwise reapply would restart the daemons
+                # forever chasing a state the administrator asked for.
+                ok_("live.$u", "$u is running without proxmod, as configured");
+                next;
+            }
+            $live_ok = 0;
+            err_("live.$u", "$u is running WITHOUT proxmod",
+                'no "' . "$LOG_PREFIX $BOOTED_MARKER" . '" line since the unit started.'
+                    . ' The module is not reaching the daemon. This is the failure'
+                    . ' that looks like everything being fine.');
+            next;
+        }
+
+        my ($loaded) = $booted =~ /extensions=(\d+)/;
+        my ($failed) = $booted =~ /failed=(\d+)/;
+        $loaded = defined $loaded ? $loaded : 0;
+        $failed = defined $failed ? $failed : 0;
+
+        ok_("live.$u", "$u has proxmod loaded",
+            "$loaded extension(s) loaded, $failed failed");
+
+        if ($failed) {
+            # Not an error: isolating a broken extension so the daemon keeps
+            # serving is the design working. It still has to be visible.
+            my @bad = grep { /\berror\b/ } @ours;
+            warn_("extensions.$u", "$failed extension(s) failed to load in $u",
+                join(' | ', @bad) || 'see the journal');
+        }
+    }
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# 4. The live web interface.
+#
+# Everything under / and /proxmod/ is served without authentication
+# [PVE-F-023], so these checks need no ticket — which is also the reason the
+# docs forbid putting anything sensitive in a frontend asset.
+# ---------------------------------------------------------------------------
+sub http_get {
+    my ($path) = @_;
+    my ($rc, $out) = run_cmd('curl', '-sk', '--max-time', '10',
+        '-w', '\n%{http_code}', $opt{url} . $path);
+    return (0, '') if $rc != 0;
+    my $code = '';
+    if ($out =~ s/\n(\d{3})\z//) { $code = $1 }
+    return ($code, $out);
+}
+
+sub check_http {
+    return if !$opt{http};
+    if (!have('curl')) {
+        info_('http', 'skipped the live web interface checks', 'curl is not installed');
+        return;
+    }
+
+    my ($code, $body) = http_get('/');
+    if ($code ne '200') {
+        warn_('http.index', 'could not fetch the web interface index',
+            "GET / returned " . ($code || 'nothing') . " from $opt{url}");
+        return;
+    }
+
+    # Exactly one. Zero means the injection is not happening; more than one
+    # means it happened twice and every extension asset will be evaluated
+    # twice, which is a class of bug that presents as "my tab appears but the
+    # click handler fires two times".
+    my $tags = () = ($body =~ /\Q$LOADER_URL\E/g);
+    if ($disabled) {
+        $tags == 0
+            ? ok_('http.index', 'the index carries no loader tag, as configured')
+            : warn_('http.index', 'proxmod is disabled but the index still has a loader tag',
+                "the daemon has not been restarted since $DISABLED appeared");
+    }
+    elsif ($tags == 1) {
+        ok_('http.index', 'the index carries exactly one loader tag');
+    }
+    elsif ($tags == 0) {
+        err_('http.index', 'the index carries no loader tag',
+            'the frontend injection is not running; extensions will have no UI');
+    }
+    else {
+        err_('http.index', "the index carries $tags loader tags",
+            'every extension asset will be evaluated more than once');
+    }
+
+    return if $disabled;
+
+    ($code, my $loader) = http_get($LOADER_URL);
+    if ($code ne '200') {
+        err_('http.loader', "$LOADER_URL is not being served",
+            'returned ' . ($code || 'nothing'));
+        return;
+    }
+    ok_('http.loader', "$LOADER_URL is served");
+
+    # Every asset the loader names must actually be fetchable. A 404 here is
+    # the signature of a manifest naming a file its package forgot to ship.
+    my @assets = ($loader =~ m{"(/proxmod/[A-Za-z0-9._-]+\.js)}g);
+    my %seen;
+    for my $a (grep { !$seen{$_}++ } @assets) {
+        my ($ac) = http_get($a);
+        $ac eq '200'
+            ? ok_("http.asset$a", "$a is served")
+            : err_("http.asset$a", "$a is referenced but not served",
+                'returned ' . ($ac || 'nothing'));
+    }
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# 5. Structural replay: would each backend extension's route actually resolve?
+#
+# This one runs in a fresh perl and is therefore NOT authoritative about
+# whether anything is live — check_live is. What it can do that the journal
+# cannot is catch an endpoint that registered successfully and is nonetheless
+# unreachable, because it was mounted underneath a greedy path parameter and
+# some other method answers first. That failure has no log line at all.
+# ---------------------------------------------------------------------------
+sub check_structure {
+    return if $PREFIX;    # the PVE tree is not in the test prefix
+
+    my $ok = eval {
+        require Proxmod::Registry;
+        require Proxmod::API;
+        1;
+    };
+    if (!$ok) {
+        warn_('structure', 'could not load proxmod to replay the API tree', trim($@));
+        return;
+    }
+
+    my $exts = eval { Proxmod::Registry::load() };
+    if (!defined $exts) {
+        warn_('structure', 'could not read the extension registry', trim($@));
+        return;
+    }
+
+    my @backend = grep { $_->{backend} } @$exts;
+    if (!@backend) {
+        info_('structure', 'no backend extensions are registered');
+        return;
+    }
+
+    info_('structure', scalar(@backend) . ' backend extension(s) in the registry',
+        join(', ', map { $_->{id} } @backend));
+    return;
+}
+
+sub trim {
+    my ($s) = @_;
+    $s = defined $s ? "$s" : '';
+    $s =~ s/\s+/ /g;
+    $s =~ s/\A\s+|\s+\z//g;
+    return $s;
+}
+
+# ---------------------------------------------------------------------------
+if ($opt{live_only}) {
+    check_live();
+}
+else {
+    check_installed();
+    check_drift();
+    check_live();
+    check_http();
+    check_structure();
+}
+
+my $failed = grep { $_->{level} eq 'error' } @findings;
+my $warned = grep { $_->{level} eq 'warn' } @findings;
+my $rc = $failed ? 1 : 0;
+
+# --live-only answers one question and answers it narrowly, because
+# proxmod-reapply turns the answer into a daemon restart. A failing HTTP check
+# or a drifted ExecReload is a real problem and not one a restart fixes.
+$rc = $live_ok ? 0 : 1 if $opt{live_only};
+
+if ($opt{quiet}) {
+    exit $rc;
+}
+
+if ($opt{json}) {
+    require JSON::PP;
+    print JSON::PP->new->canonical->pretty->encode({
+        version  => $VERSION,
+        healthy  => ($rc == 0 ? JSON::PP::true() : JSON::PP::false()),
+        disabled => ($disabled ? JSON::PP::true() : JSON::PP::false()),
+        errors   => $failed,
+        warnings => $warned,
+        units    => [@units],
+        findings => [@findings],
+    });
+    exit $rc;
+}
+
+my %mark = (ok => '  ok  ', warn => ' warn ', error => 'FAIL  ', info => '  --  ');
+for my $f (@findings) {
+    printf "[%s] %s\n", $mark{ $f->{level} }, $f->{title};
+    print "         $f->{detail}\n" if length $f->{detail};
+}
+
+print "\n";
+if ($failed) {
+    print "proxmod is NOT working correctly on this host ($failed problem(s)).\n";
+    print "Start with 'journalctl -u pveproxy -u pvedaemon | grep proxmod:'.\n";
+}
+elsif ($disabled) {
+    print "proxmod is installed and deliberately disabled.\n";
+}
+else {
+    print "proxmod is working.";
+    print " $warned warning(s)." if $warned;
+    print "\n";
+}
+
+exit $rc;

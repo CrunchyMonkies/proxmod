@@ -1,0 +1,180 @@
+#!/bin/sh
+# proxmodctl — the administrator's front door to proxmod.
+#
+# Everything here is a thin wrapper over something else: proxmod-verify for
+# questions, proxmod-reapply for changes. There is deliberately no logic in this
+# file that is not also reachable another way, because the mechanisms have to
+# keep working when nobody is at a terminal — a dpkg trigger and a boot-time
+# unit call the same two programs.
+#
+# What this does add is discoverability. An administrator who has just been
+# handed a Proxmox host with proxmod on it needs one command that lists what is
+# installed and one that says whether it works, without first reading the
+# manual to learn that the answer lives in `journalctl -u pveproxy`.
+
+set -eu
+
+VERIFY=/usr/sbin/proxmod-verify
+REAPPLY=/usr/lib/proxmod/proxmod-reapply
+PATCH=/usr/lib/proxmod/proxmod-patch
+DISABLED=/etc/proxmod/disabled
+PKG_EXT=/usr/share/proxmod/extensions.d
+ADM_EXT=/etc/proxmod/extensions.d
+WWW=/usr/share/proxmod/www
+
+usage() {
+    cat <<'EOF'
+usage: proxmodctl <command> [options]
+
+  status            is proxmod working? (proxmod-verify)
+  status --json     the same, for monitoring
+  list              the extensions this host has installed
+  reapply           converge the systemd drop-ins and restart if needed
+  reapply --force   restart the wrapped daemons even if nothing changed
+  enable            remove the kill switch and restart the daemons
+  disable           stop loading proxmod, and restart the daemons stock
+  logs [-f]         what proxmod said in the daemons' journals
+  patch <sub>       the managed patch facility; `patch` on its own for help
+  doctor            status, plus the context you would paste into a bug report
+
+Changes made by `enable`, `disable` and `reapply` restart pvedaemon and
+pveproxy. Running guests are not affected; open web-interface sessions
+reconnect.
+EOF
+}
+
+die() { printf 'proxmodctl: %s\n' "$*" >&2; exit 1; }
+
+need_root() {
+    [ "$(id -u)" = 0 ] || die "$1 needs root"
+}
+
+cmd=${1:-}
+if [ $# -gt 0 ]; then shift; fi
+
+case "$cmd" in
+    ''|-h|--help|help)
+        usage
+        ;;
+
+    status)
+        [ -x "$VERIFY" ] || die "$VERIFY is not installed"
+        # Not exec'd through `set -e`'s failure path: a non-zero exit here is
+        # the answer to the question, not an error in asking it.
+        "$VERIFY" "$@" || exit $?
+        ;;
+
+    list)
+        # Read straight off the disk rather than out of a running daemon, so
+        # this still answers when the daemons are down — which is exactly when
+        # someone is asking.
+        found=0
+        for d in "$PKG_EXT" "$ADM_EXT"; do
+            [ -d "$d" ] || continue
+            for f in "$d"/*.conf; do
+                [ -f "$f" ] || continue
+                found=1
+                printf '%s\n' "$f"
+                sed -n 's/^[[:space:]]*\(id\|version\|module\|assets\|daemons\)[[:space:]]*=[[:space:]]*/    \1: /p' "$f"
+            done
+        done
+        if [ -d "$WWW" ]; then
+            printf '\nfrontend assets in %s:\n' "$WWW"
+            for f in "$WWW"/*.js; do
+                [ -f "$f" ] || continue
+                printf '    %s\n' "${f##*/}"
+            done
+        fi
+        [ "$found" = 1 ] || printf 'no extensions installed\n'
+        ;;
+
+    reapply)
+        need_root reapply
+        [ -x "$REAPPLY" ] || die "$REAPPLY is not installed"
+        "$REAPPLY" "$@"
+        ;;
+
+    enable)
+        need_root enable
+        if [ ! -e "$DISABLED" ]; then
+            printf 'proxmod is already enabled\n'
+            exit 0
+        fi
+        rm -f "$DISABLED"
+        # --force because nothing on disk changed: the drop-ins were already
+        # correct while disabled, and it is the daemons' running state that
+        # has to catch up with the switch.
+        "$REAPPLY" --force
+        ;;
+
+    disable)
+        need_root disable
+        # The kill switch is honoured by proxmod-exec at daemon start, so the
+        # drop-ins stay in place and simply pass the daemon through. That means
+        # re-enabling is one file and one restart, with no packaging involved —
+        # which is the property you want at 3am.
+        mkdir -p "$(dirname "$DISABLED")"
+        : > "$DISABLED"
+        printf 'proxmod disabled by %s; restarting the daemons without it\n' "$DISABLED"
+        systemctl try-restart pvedaemon.service || true
+        systemctl try-restart pveproxy.service || true
+        ;;
+
+    patch)
+        # Deliberately not summarised here. Patching a Proxmox file is the one
+        # thing proxmod does that an administrator should have read about
+        # first, and proxmod-patch's own usage says so.
+        [ -x "$PATCH" ] || die "$PATCH is not installed"
+        [ $# -gt 0 ] || set -- status
+        case "${1:-}" in
+            status) ;;
+            *) need_root "proxmodctl patch $1" ;;
+        esac
+        "$PATCH" "$@"
+        ;;
+
+    logs)
+        # -u twice: an extension that registers in pvedaemon and draws in
+        # pveproxy logs to both, and reading them interleaved is the only way
+        # the ordering makes sense.
+        journalctl -u pvedaemon -u pveproxy --no-pager "$@" | grep 'proxmod:' || {
+            printf 'nothing from proxmod in the journal.\n' >&2
+            printf 'if the daemons are running, that itself is the finding:\n' >&2
+            printf 'run "proxmodctl status".\n' >&2
+            exit 1
+        }
+        ;;
+
+    doctor)
+        # One command whose output is worth pasting into a bug report. Nothing
+        # here is secret: it is package versions, unit state and our own log
+        # lines. It deliberately does not dump the extension manifests, which
+        # are third-party files we make no promises about the contents of.
+        printf '=== proxmod ===\n'
+        dpkg-query -W -f='${Package} ${Version}\n' 'proxmod*' 2>/dev/null || true
+        printf '\n=== proxmox ===\n'
+        dpkg-query -W -f='${Package} ${Version}\n' pve-manager libpve-http-server-perl 2>/dev/null || true
+        printf '\n=== units ===\n'
+        for u in pvedaemon.service pveproxy.service; do
+            printf '%s: %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"
+            systemctl show -p ExecStart -p ExecReload --value "$u" 2>/dev/null || true
+        done
+        printf '\n=== extensions ===\n'
+        "$0" list || true
+        printf '\n=== journal ===\n'
+        journalctl -u pvedaemon -u pveproxy --no-pager -n 200 2>/dev/null \
+            | grep 'proxmod:' || printf '(nothing)\n'
+        printf '\n=== patches ===\n'
+        if [ -x "$PATCH" ]; then "$PATCH" status || true; fi
+        printf '\n=== verify ===\n'
+        # `[ -x ] && ...` would be the obvious spelling and is wrong under
+        # `set -e`: when the test fails the whole list is false and the script
+        # exits, which on a partially installed host means doctor stops without
+        # printing the section that says so.
+        if [ -x "$VERIFY" ]; then "$VERIFY" || true; fi
+        ;;
+
+    *)
+        die "unknown command: $cmd (try 'proxmodctl help')"
+        ;;
+esac
