@@ -1,0 +1,108 @@
+name: ci
+
+# Everything here runs on a plain Debian container with no Proxmox on it.
+# That is a deliberate constraint on the test suite rather than a limitation of
+# CI: t/lib holds stubs for the PVE modules, so the unit tests exercise the
+# real code against a stand-in for the parts of Proxmox they touch. The claims
+# that can only be made about a live hypervisor are made by the QEMU suite,
+# which needs KVM and a 5GB image and runs in e2e.yml on demand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install test dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            perl libtest-simple-perl libjson-perl make
+
+      # Every module is compiled under -T as well as plainly. Taint mode is not
+      # optional here: /usr/bin/pveproxy is `#!/usr/bin/perl -T` [PVE-F-002],
+      # so code that only compiles without it would fail on a real host and
+      # nowhere else.
+      - name: prove -r t/
+        run: prove -r t/
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install linters
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            perl shellcheck nodejs make
+
+      # shellcheck matters more here than in most projects: proxmod's shell
+      # runs as root, out of systemd and dpkg triggers, at the moment the
+      # package is least able to report a problem.
+      - name: make lint
+        run: make lint
+
+  package:
+    name: build the package
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential debhelper devscripts lintian perl fakeroot
+
+      - name: dpkg-buildpackage
+        run: dpkg-buildpackage -us -uc -b
+
+      - name: build the example extension
+        run: cd examples/proxmod-example-hello && dpkg-buildpackage -us -uc -b
+
+      # Informational. lintian on a package that installs systemd drop-ins into
+      # /etc and ships scripts in /usr/lib has opinions that do not all apply,
+      # and a failing gate nobody can satisfy gets disabled rather than fixed.
+      - name: lintian
+        run: lintian ../proxmod_*_all.deb || true
+
+      # The claim in the documentation is that an extension package needs no
+      # maintainer scripts at all. If that ever stops being true, the contract
+      # every extension author codes against has changed and the docs are
+      # wrong — so it is checked here rather than only in the QEMU suite.
+      - name: the example ships no maintainer scripts
+        run: |
+          set -e
+          deb=$(ls examples/proxmod-example-hello_*_all.deb | head -1)
+          dpkg -e "$deb" /tmp/ctrl
+          found=$(find /tmp/ctrl -maxdepth 1 -type f \
+                    \( -name postinst -o -name preinst -o -name prerm -o -name postrm \) \
+                    -printf '%f ')
+          if [ -n "$found" ]; then
+            echo "the example extension grew maintainer scripts: $found" >&2
+            exit 1
+          fi
+          echo "ok: no maintainer scripts"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: |
+            ../proxmod_*_all.deb
+            examples/proxmod-example-hello_*_all.deb
+          if-no-files-found: error

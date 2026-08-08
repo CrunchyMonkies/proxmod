@@ -1,0 +1,86 @@
+name: e2e
+
+# The QEMU integration suite. Manual and self-hosted on purpose.
+#
+# It needs three things a hosted GitHub runner does not have: nested KVM, a
+# ~5GB golden PVE image, and a Proxmox installer ISO. Attempting it on
+# ubuntu-latest would mean either a 40-minute unattended install on every push
+# or a TCG-emulated boot slow enough that the timeouts in the harness stop
+# meaning anything — and a CI job that is usually red for infrastructure
+# reasons trains people to ignore it.
+#
+# So this is the deliberate split: ci.yml proves the code is correct on every
+# push, and this proves it works on a live hypervisor when someone asks.
+#
+# The runner needs, once:
+#   * qemu-system-x86_64, qemu-img, socat, ssh, genisoimage
+#   * /dev/kvm accessible to the runner user
+#   * a golden image built with `test/qemu/vm.sh install`, and the ISO,
+#     at the paths in PROXMOD_PVE_IMAGE / PROXMOD_PVE_ISO below
+#
+# Neither the image nor the ISO is in git. The image is large and rebuildable;
+# the ISO is Proxmox's to distribute, not ours.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Test numbers to run (e.g. "03 07"), or blank for all'
+        required: false
+        default: ''
+      keep_vm:
+        description: 'Leave the VM running afterwards'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  qemu:
+    name: live PVE host
+    runs-on: [self-hosted, kvm]
+    timeout-minutes: 90
+
+    env:
+      PROXMOD_PVE_IMAGE: ${{ vars.PROXMOD_PVE_IMAGE || '/var/lib/proxmod-ci/pve-test.qcow2' }}
+      PROXMOD_PVE_ISO:   ${{ vars.PROXMOD_PVE_ISO   || '/var/lib/proxmod-ci/proxmox-ve_9.1-1.iso' }}
+      PROXMOD_KEEP_VM:   ${{ inputs.keep_vm && '1' || '0' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check the runner has what this needs
+        run: |
+          set -e
+          for c in qemu-system-x86_64 qemu-img socat ssh dpkg-buildpackage; do
+            command -v "$c" >/dev/null || { echo "missing: $c" >&2; exit 1; }
+          done
+          [ -r /dev/kvm ] || { echo "no access to /dev/kvm" >&2; exit 1; }
+          [ -f "$PROXMOD_PVE_IMAGE" ] || {
+            echo "no golden image at $PROXMOD_PVE_IMAGE" >&2
+            echo "build one once with: test/qemu/vm.sh install" >&2
+            exit 1
+          }
+          [ -f "$PROXMOD_PVE_ISO" ] || echo "::warning::no ISO — the upgrade test will skip"
+
+      - name: run the suite
+        run: ./scripts/e2e.sh ${{ inputs.tests }}
+
+      # Pulled whether the run passed or failed. On a failure the VM is already
+      # gone by now, so this is the only remaining record of why.
+      - name: collect evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: test/qemu/.run/artifacts/
+          if-no-files-found: warn
+
+      # A suite that failed halfway can leave a VM behind holding a port and a
+      # few GB of overlay. Belt and braces: scripts/e2e.sh already does this in
+      # its own EXIT trap.
+      - name: make sure no VM is left running
+        if: always() && inputs.keep_vm != true
+        run: ./test/qemu/vm.sh stop || true
