@@ -1,0 +1,26 @@
+Source: proxmod-example-hello
+Section: admin
+Priority: optional
+Maintainer: proxmod maintainers <proxmod@localhost>
+Build-Depends:
+ debhelper-compat (= 13),
+ perl,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: proxmod-example-hello
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${perl:Depends},
+ proxmod (>= 0.1.0),
+Description: reference proxmod extension for Proxmox VE
+ A complete, minimal proxmod extension: one REST endpoint tree under
+ /nodes/{node}/proxmod/example-hello and one tab in the node view of the
+ Proxmox VE web interface.
+ .
+ It exists to be read. It is the smallest package that exercises the whole
+ extension contract, and it has no maintainer scripts of any kind: it ships a
+ Perl module, a manifest and a JavaScript file, and proxmod's dpkg trigger does
+ the rest. Installing and removing it leaves every Proxmox-owned file byte for
+ byte unchanged.

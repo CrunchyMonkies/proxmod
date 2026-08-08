@@ -1,0 +1,8 @@
+#!/usr/bin/make -f
+
+# dh's makefile buildsystem calls `make build` and `make install DESTDIR=...`,
+# which is the entire build. Nothing here needs overriding — an extension has
+# no drop-ins to place, no units to reload and no permissions to restore.
+
+%:
+	dh $@
