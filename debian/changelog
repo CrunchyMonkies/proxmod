@@ -1,0 +1,13 @@
+proxmod (0.1.0) unstable; urgency=medium
+
+  * Initial release.
+  * Runtime injection of extensions into pvedaemon and pveproxy via a
+    fail-safe systemd ExecStart wrapper. No Proxmox-owned file is modified.
+  * Backend extension API (Proxmod::API) with idempotent registration and a
+    post-registration check that the route actually resolves.
+  * Frontend injection of a single loader script tag at index render time,
+    plus Proxmod.ui/Proxmod.api for extension authors.
+  * dpkg trigger driven convergence (proxmod-reapply), so an extension package
+    needs no maintainer scripts and an upgrade needs nothing reapplied.
+
+ -- proxmod maintainers <proxmod@localhost>  Fri, 08 Aug 2026 00:00:00 +0000

@@ -1,0 +1,20 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: proxmod
+Source: https://github.com/CrunchyMonkies/proxmod
+
+Files: *
+Copyright: 2026 proxmod contributors
+License: AGPL-3.0-or-later
+ This program is free software: you can redistribute it and/or modify it under
+ the terms of the GNU Affero General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option) any
+ later version.
+ .
+ On Debian systems the full text of the GNU Affero General Public License
+ version 3 can be found in /usr/share/common-licenses/AGPL-3.
+
+Comment:
+ proxmod attaches to Proxmox VE at documented-by-us, not documented-by-Proxmox,
+ seams. It ships no Proxmox code. The evidence in docs/facts/ is machine
+ extracted from a Proxmox VE installer ISO at documentation-build time and is
+ not distributed in the binary package.

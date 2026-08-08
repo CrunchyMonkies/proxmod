@@ -1,0 +1,46 @@
+Source: proxmod
+Section: admin
+Priority: optional
+Maintainer: proxmod maintainers <proxmod@localhost>
+Build-Depends:
+ debhelper-compat (= 13),
+ perl,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/CrunchyMonkies/proxmod
+
+# Deliberately no upper bound on pve-manager. A `Breaks: pve-manager (>= 10~)`
+# would hold back a legitimate major upgrade of the hypervisor to protect an
+# add-on, which is a worse outcome than the one it prevents. proxmod probes
+# every seam it uses at runtime and disables itself feature by feature instead.
+# See docs/compatibility.md.
+Package: proxmod
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${perl:Depends},
+ pve-manager,
+ libpve-http-server-perl,
+ systemd,
+ util-linux,
+Recommends:
+ curl,
+Suggests:
+ proxmod-example-hello,
+Description: extension framework for Proxmox VE 9.x
+ proxmod lets a Debian package add REST endpoints and web-interface components
+ to a Proxmox VE host without modifying a single Proxmox-owned file.
+ .
+ Extensions are loaded into the running pvedaemon and pveproxy by a systemd
+ ExecStart wrapper that adds one Perl module to the daemons' command line. That
+ module registers each extension's API methods and injects one script tag into
+ the web interface at render time. Nothing is patched, so `dpkg -V pve-manager`
+ stays clean and there is nothing to reapply after an upgrade.
+ .
+ An extension package needs no maintainer scripts: it ships a Perl module, a
+ manifest and a JavaScript file, and proxmod's dpkg trigger converges the host.
+ .
+ Every layer is written to fail toward stock Proxmox. A broken extension is
+ isolated to itself, a missing seam disables only the feature that needed it,
+ and a daemon that does not come back after a restart causes proxmod to remove
+ its own drop-ins and restart it unmodified.

@@ -1,0 +1,31 @@
+#!/usr/bin/make -f
+
+# The build is entirely delegated to the top-level Makefile, whose `install`
+# target is the single source of truth for where every shipped file lands. That
+# matters more than it sounds: `make install DESTDIR=...` into a scratch tree is
+# how t/ and the QEMU harness check the file manifest without building a .deb.
+
+%:
+	dh $@
+
+# dh_fixperms resets modes on everything outside the recognised bin directories
+# to 0644. /usr/lib/proxmod/proxmod-exec is named by pveproxy's and pvedaemon's
+# ExecStart=, so a 0644 wrapper is not a cosmetic defect — it is both daemons
+# failing to start with a systemd error that says nothing about proxmod.
+#
+# This is the single most expensive mistake available in this file, which is why
+# the override is explicit about each path rather than a blanket chmod -R.
+#
+# find rather than a glob: /usr/sbin is created by the install target and is
+# still empty until proxmod-verify lands, and a glob that matches nothing would
+# fail the build for no reason.
+override_dh_fixperms:
+	dh_fixperms
+	find debian/proxmod/usr/lib/proxmod debian/proxmod/usr/sbin \
+	    -maxdepth 1 -type f -print0 2>/dev/null | xargs -0 -r chmod 0755
+
+# The trigger and the boot-time unit both converge the host themselves, and
+# postinst calls proxmod-reapply directly. Letting debhelper additionally
+# restart things would mean two mechanisms deciding when the daemons bounce.
+override_dh_installsystemd:
+	dh_installsystemd --no-restart-after-upgrade --no-stop-on-upgrade

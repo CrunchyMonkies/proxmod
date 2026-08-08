@@ -1,0 +1,68 @@
+#!/bin/sh
+# proxmod prerm
+#
+# THE ORDERING RULE THIS FILE EXISTS FOR.
+#
+# /etc/systemd/system/pveproxy.service.d/10-proxmod.conf names
+# /usr/lib/proxmod/proxmod-exec in ExecStart=. dpkg is about to delete that
+# wrapper. If the drop-in is still in place when it does, pveproxy's ExecStart
+# points at a file that no longer exists, and the next restart of the Proxmox
+# web interface — an upgrade, a reboot, an administrator — fails with a systemd
+# error that mentions neither proxmod nor the reason.
+#
+# So the drop-ins must be removed BEFORE the files they reference, which means
+# here, in prerm, and not in postrm. This is also why they are not conffiles:
+# dpkg's conffile handling would leave them behind for the administrator to
+# resolve, which is the wrong answer for a file whose only content is a
+# reference to something being deleted.
+#
+# AND THE RULE ABOUT WHEN NOT TO.
+#
+# `upgrade` does none of this. Removing the drop-ins on upgrade would restart
+# both daemons stock, and then postinst would restart them again with proxmod:
+# two interruptions instead of none, in exchange for nothing. The prior art
+# reverted its changes on upgrade and thereby restored a stale pre-upgrade copy
+# of a Proxmox file over the newer one dpkg had just unpacked. Reverting on
+# upgrade is how that class of bug happens.
+
+set -e
+
+REAPPLY=/usr/lib/proxmod/proxmod-reapply
+PATCH=/usr/lib/proxmod/proxmod-patch
+
+case "$1" in
+    remove|deconfigure)
+        # Managed patches first, while the engine and its state file still
+        # exist: after dpkg has deleted /usr/lib/proxmod, nothing on the host
+        # knows which Proxmox files proxmod edited or what they looked like
+        # before. On a host that never enabled a patch spec — every host, by
+        # default — this walks an empty state file and returns.
+        #
+        # Note which case this is in. Reverting here, on remove, is right.
+        # Reverting on upgrade is the defect described above.
+        if [ -x "$PATCH" ]; then
+            "$PATCH" revert-all || echo "proxmod: prerm: some managed patches could not be undone; the files still carry proxmod:begin/end markers" >&2
+        fi
+
+        if [ -x "$REAPPLY" ]; then
+            # --remove converges to "proxmod is not installed": drop-ins gone,
+            # daemon-reload, and the daemons restarted exactly as Proxmox
+            # ships them. It does not self-heal afterwards, because there is
+            # nothing left of ours to blame.
+            "$REAPPLY" --remove || echo "proxmod: prerm: convergence reported a problem; see the journal" >&2
+        fi
+        ;;
+
+    upgrade|failed-upgrade)
+        # Nothing. See above.
+        ;;
+
+    *)
+        echo "prerm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

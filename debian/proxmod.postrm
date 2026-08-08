@@ -1,0 +1,85 @@
+#!/bin/sh
+# proxmod postrm
+#
+# By the time this runs, prerm has already removed the systemd drop-ins and
+# restarted the daemons stock, and dpkg has deleted every file the package
+# owns. What is left is the state proxmod created at runtime, and directories
+# that other packages may still be using.
+#
+# THE RULE ABOUT DIRECTORIES. /usr/share/proxmod/www and
+# /usr/share/proxmod/extensions.d are shared: an extension package's files live
+# there and dpkg will remove them when that package is removed, on its own
+# schedule, which may be after this. So they are pruned with rmdir, which fails
+# harmlessly when they are not empty, and never with rm -rf. Deleting another
+# package's files during our own removal would be exactly the kind of collateral
+# damage this project exists to argue against.
+
+set -e
+
+case "$1" in
+    purge)
+        # Runtime state we created. /var/lib/proxmod holds the reapply lock and
+        # the patch-state database; on purge it goes.
+        rm -f /var/lib/proxmod/reapply.lock
+        rm -f /var/lib/proxmod/patches.state
+
+        # Patch backups. prerm has already reverted every patch and deleted the
+        # backup it was named for, entry by entry, out of the state database —
+        # this is the backstop for the case where that could not complete.
+        #
+        # It is a bounded sweep of one directory that only proxmod ever writes
+        # to, and that is the point. The prior art kept its backup next to the
+        # original, as /usr/share/perl5/PVE/API2/Hardware.pm.pre-gpu, and its
+        # postrm never removed it — so the file outlived the package, in a
+        # directory belonging to Proxmox, with nothing left on the host to
+        # explain it. Backups that live somewhere we own cannot be orphaned in
+        # someone else's directory, and clearing them cannot delete someone
+        # else's file.
+        rm -f /var/lib/proxmod/backups/*.bak
+        rmdir --ignore-fail-on-non-empty /var/lib/proxmod/backups 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty /var/lib/proxmod 2>/dev/null || true
+
+        # The administrator's overlay. Conffiles under /etc/proxmod are removed
+        # by dpkg itself; what is left here is the kill switch and anything
+        # dropped in by hand or by a config management tool.
+        rm -f /etc/proxmod/disabled
+        rmdir --ignore-fail-on-non-empty /etc/proxmod/extensions.d 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty /etc/proxmod/patches 2>/dev/null || true
+        rmdir --ignore-fail-on-non-empty /etc/proxmod 2>/dev/null || true
+
+        # Directories only. If an extension package still owns files in here,
+        # every rmdir below fails and that is the correct outcome.
+        for d in /usr/share/proxmod/systemd/pveproxy.service.d \
+                 /usr/share/proxmod/systemd/pvedaemon.service.d \
+                 /usr/share/proxmod/systemd \
+                 /usr/share/proxmod/extensions.d \
+                 /usr/share/proxmod/patches \
+                 /usr/share/proxmod/www \
+                 /usr/share/proxmod \
+                 /usr/lib/proxmod
+        do
+            rmdir --ignore-fail-on-non-empty "$d" 2>/dev/null || true
+        done
+
+        # Empty drop-in directories we may have created under /etc/systemd/system
+        # in the course of installing a drop-in. Only if empty: systemd itself
+        # and other packages use these.
+        for d in /etc/systemd/system/pveproxy.service.d \
+                 /etc/systemd/system/pvedaemon.service.d
+        do
+            rmdir "$d" 2>/dev/null || true
+        done
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

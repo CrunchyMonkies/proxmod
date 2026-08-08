@@ -1,0 +1,45 @@
+# proxmod's update-survival mechanism, and the reason an extension package can
+# ship with no maintainer scripts at all.
+#
+# dpkg calls our postinst with `triggered` after any package writes into one of
+# the paths below. That is batched once per dpkg run, ordered by dpkg, and
+# happens on `dpkg -i` as well as on apt — none of which is true of an
+# /etc/apt/apt.conf.d DPkg::Post-Invoke hook, which is what the prior art used
+# and why it never fired on a manual dpkg install.
+#
+# `-noawait` throughout: our postinst neither provides nor completes anything
+# the triggering package needs, so making it wait would only widen the window
+# in which an unrelated upgrade can be blocked by us.
+
+# An extension package appearing, changing or going away. This is the one that
+# turns "dpkg installed some files" into "the endpoint is live".
+interest-noawait /usr/share/proxmod/extensions.d
+
+# The administrator's overlay. Rarely written by a package, but a config
+# management tool dropping a file here should converge the same way.
+interest-noawait /etc/proxmod/extensions.d
+
+# Frontend assets. A frontend-only extension needs no daemon restart — the
+# loader is generated per request from the live registry — but the manifest
+# that names the asset lives above, and this catches an asset shipped in a
+# later upload than its manifest.
+interest-noawait /usr/share/proxmod/www
+
+# Patch specs, packaged and administrator-supplied. A host with no enabled spec
+# — which is every host until somebody deliberately changes that — converges
+# these in one perl process that finds nothing to do.
+interest-noawait /usr/share/proxmod/patches
+interest-noawait /etc/proxmod/patches
+
+# Proxmox itself. pve-manager's own postinst already runs
+# `reload-or-try-restart` on upgrade [PVE-F-005], which our ExecReload override
+# turns into a real restart and so re-injects proxmod. This entry is the belt
+# to that braces: it also covers libpve-* upgrades, which do not run that
+# reload. proxmod-reapply is a no-op unless something is genuinely wrong, so
+# the cost of the extra invocation is one process.
+interest-noawait /usr/share/perl5/PVE
+
+# A named trigger, so that a package or an administrator can ask for
+# convergence explicitly with `dpkg-trigger proxmod-reapply` without having to
+# know which paths we watch.
+interest-noawait proxmod-reapply

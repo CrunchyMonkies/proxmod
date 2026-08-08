@@ -1,0 +1,56 @@
+#!/bin/sh
+# proxmod postinst
+#
+# Two jobs, and one of them is not a job at all:
+#
+#   configure  — converge the host: install the systemd drop-ins, reload, and
+#                restart the wrapped daemons if and only if something moved.
+#   triggered  — the same convergence, run because some other package wrote
+#                into a path we declared interest in. This is how an extension
+#                package with no maintainer scripts gets loaded.
+#
+# Everything the two have in common is in /usr/lib/proxmod/proxmod-reapply,
+# which is idempotent and is also what the boot-time unit and `proxmodctl
+# reapply` call. There is deliberately no second implementation of "make the
+# host match the package" anywhere in this source tree.
+
+set -e
+
+REAPPLY=/usr/lib/proxmod/proxmod-reapply
+
+case "$1" in
+    configure)
+        if [ -x "$REAPPLY" ]; then
+            "$REAPPLY"
+        fi
+        ;;
+
+    triggered)
+        # --trigger makes this exit 0 no matter what happens. A non-zero exit
+        # from a trigger leaves proxmod half-configured and can stop an entire
+        # `apt dist-upgrade` — including the security updates of packages that
+        # have nothing to do with us. The failure is in the journal and
+        # proxmod-verify will report it; wedging dpkg is not an improvement.
+        if [ -x "$REAPPLY" ]; then
+            "$REAPPLY" --trigger
+        fi
+        exit 0
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        # We are being put back the way we were. Converge; if the drop-ins are
+        # already right this costs nothing.
+        if [ -x "$REAPPLY" ]; then
+            "$REAPPLY" --trigger
+        fi
+        ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
