@@ -28,14 +28,21 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            perl libtest-simple-perl libjson-perl make
+            perl libtest-simple-perl libjson-perl libhttp-message-perl make
+          useradd -m ci
+          chown -R ci:ci .
 
       # Every module is compiled under -T as well as plainly. Taint mode is not
       # optional here: /usr/bin/pveproxy is `#!/usr/bin/perl -T` [PVE-F-002],
       # so code that only compiles without it would fail on a real host and
       # nowhere else.
+      #
+      # PROXMOD_TEST_PREFIX (what t/07-10 use to redirect exec/proxmod-* into a
+      # disposable tree) is honoured only when the effective UID is not 0, by
+      # design — see exec/proxmod-exec. Run as a real non-root user so it
+      # activates instead of silently falling through to production paths.
       - name: prove -r t/
-        run: prove -r t/
+        run: su ci -c 'prove -r t/'
 
   lint:
     name: lint
@@ -68,12 +75,18 @@ jobs:
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential debhelper devscripts lintian perl fakeroot
+          useradd -m ci
+          chown -R ci:ci .
+          chown ci:ci ..
 
+      # Rules-Requires-Root: no in debian/control means this package is built
+      # by a non-root user, with fakeroot faking root only where dpkg needs it.
+      # Building as real root here would never exercise that.
       - name: dpkg-buildpackage
-        run: dpkg-buildpackage -us -uc -b
+        run: su ci -c 'dpkg-buildpackage -us -uc -b'
 
       - name: build the example extension
-        run: cd examples/proxmod-example-hello && dpkg-buildpackage -us -uc -b
+        run: su ci -c 'cd examples/proxmod-example-hello && dpkg-buildpackage -us -uc -b'
 
       # Informational. lintian on a package that installs systemd drop-ins into
       # /etc and ships scripts in /usr/lib has opinions that do not all apply,
