@@ -42,7 +42,7 @@ jobs:
       # design — see exec/proxmod-exec. Run as a real non-root user so it
       # activates instead of silently falling through to production paths.
       - name: prove -r t/
-        run: su ci -c 'prove -r t/'
+        run: su ci -c 'umask 022 && prove -r t/'
 
   lint:
     name: lint
@@ -112,10 +112,17 @@ jobs:
           fi
           echo "ok: no maintainer scripts"
 
+      # actions/upload-artifact rejects glob patterns containing a '..'
+      # segment outright, and dpkg-buildpackage always puts its .deb one
+      # directory above the source tree it built from — so the artifact has
+      # to be collected into the workspace before it can be uploaded.
+      - name: collect artifacts
+        run: |
+          mkdir -p dist
+          cp ../proxmod_*_all.deb examples/proxmod-example-hello_*_all.deb dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: debs
-          path: |
-            ../proxmod_*_all.deb
-            examples/proxmod-example-hello_*_all.deb
+          path: dist/*_all.deb
           if-no-files-found: error
