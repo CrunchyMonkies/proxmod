@@ -1,7 +1,7 @@
 # Writing a backend extension
 
 **Status:** Draft
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the worked example in this document is
 [`examples/proxmod-example-hello/`](../examples/proxmod-example-hello/), which is
@@ -601,7 +601,7 @@ Your `.deb` needs **no maintainer scripts**. Writing into
 ```
 Package: acme-foo
 Architecture: all
-Depends: proxmod (>= 0.1.0), ${misc:Depends}
+Depends: proxmod (>= 0.2.0), ${misc:Depends}
 Description: Acme Foo for Proxmox VE
 ```
 

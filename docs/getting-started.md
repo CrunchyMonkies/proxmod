@@ -1,7 +1,7 @@
 # Getting started
 
 **Status:** Draft
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every command below is run by the example package's
 `Makefile` or by the QEMU integration suite; the example source is
@@ -18,7 +18,7 @@ restarts them. Not on production, not the first time.
 ## 1. Install proxmod
 
 ```sh
-apt install ./proxmod_0.1.0_all.deb
+apt install ./proxmod_0.2.0_all.deb
 proxmod-verify
 ```
 
@@ -63,7 +63,7 @@ only thing proxmod reads at boot; everything else follows from it.
 ```json
 {
   "id": "example-hello",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "order": 50,
   "backend": { "module": "ProxmodExample::Hello",
                "daemons": ["pvedaemon", "pveproxy"] },

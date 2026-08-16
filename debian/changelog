@@ -1,3 +1,35 @@
+proxmod (0.2.0) unstable; urgency=medium
+
+  * Frontend: extensions can own an item in a config panel's left-hand menu
+    tree, not only a tab. Proxmod.ui gains addMenuScreen(), addMenuSection(),
+    addMenuItem() and configureMenu(), and the targets grow from four classes
+    to eight (datacenter, node, qemu, lxc, storage, pool, zone, network).
+    This is a new public JavaScript API, which is why this is a minor release
+    rather than a patch.
+  * proxmod-verify: a host with only backend extensions installed is healthy.
+    It previously failed the http.index check because no extension asked for
+    a loader tag, so the index correctly carried none (GH#1).
+  * proxmod-reapply: restart the wrapped daemons when they are running an
+    extension registry that is no longer the one on disk. Installing an
+    extension package did not make it live, removing one did not make it go
+    away, and upgrading proxmod itself left the old Perl modules resident in
+    daemons nobody had restarted. Each daemon now logs a fingerprint of the
+    registry it loaded and proxmod-verify recomputes it; the restart is
+    bounded by a loop-breaker so a host that cannot load the new registry
+    converges once and then reports it rather than restarting on every apt
+    run. See docs/adr/0011-registry-fingerprint.md.
+  * proxmod-verify: new --registry-only flag, as narrow as --live-only and
+    deliberately separate from it. Exits 0 up to date, 1 out of date, 2 could
+    not tell, printing the on-disk fingerprint on stdout.
+  * Docs: the Proxmox VE sources are vendored as SHA-pinned, research-only
+    submodules under docs/third_party/, so claims about unofficial seams can
+    be checked against the source rather than remembered. They are excluded
+    from the source package.
+  * Tests: new integration test 11-registry, which removes and reinstalls the
+    example extension with no --force anywhere; the purge test moves to 12.
+
+ -- proxmod maintainers <proxmod@localhost>  Sun, 16 Aug 2026 00:00:00 +0000
+
 proxmod (0.1.0) unstable; urgency=medium
 
   * Initial release.

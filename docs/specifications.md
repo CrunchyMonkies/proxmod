@@ -1,7 +1,7 @@
 # proxmod — specification
 
 **Status:** Draft
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every Proxmox-internals claim is cited as `[PVE-F-nnn]`
 into [`pve-facts.md`](pve-facts.md), whose evidence is re-derivable offline from
@@ -63,7 +63,7 @@ through and kept.
 
 | | |
 |---|---|
-| Specification version | 0.1.0 — tracks the `proxmod` package version |
+| Specification version | 0.2.0 — tracks the `proxmod` package version |
 | Target platform | Proxmox VE 9.x on Debian 13 (trixie) |
 | Last verified against | pve-manager 9.1.1, libpve-common-perl and libpve-http-server-perl as shipped in `proxmox-ve_9.1-1.iso` |
 | Verified on | 2026-08-08 |

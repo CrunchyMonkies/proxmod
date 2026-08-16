@@ -1,7 +1,7 @@
 # Packaging an extension
 
 **Status:** Draft
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x, Debian 13 (trixie)
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x, Debian 13 (trixie)
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the worked example is
 [`examples/proxmod-example-hello/`](../examples/proxmod-example-hello/), which
@@ -49,7 +49,7 @@ Architecture: all
 Depends:
  ${misc:Depends},
  ${perl:Depends},
- proxmod (>= 0.1.0),
+ proxmod (>= 0.2.0),
 Description: ...
 ```
 

@@ -1,7 +1,7 @@
 # Patching Proxmox files: the last resort
 
 **Status:** Draft
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the post-mortem in §2 cites file and line in
 `~/dev/pmxxpuiov` as it stood on 2026-08-08 and each defect was read directly;

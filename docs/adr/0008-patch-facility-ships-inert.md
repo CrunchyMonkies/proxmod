@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-08
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** implemented in
 [`perl/Proxmod/Patch.pm`](../../perl/Proxmod/Patch.pm); every spec in

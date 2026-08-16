@@ -1,7 +1,7 @@
 # proxmod-example-hello
 
 **Status:** Living
-**Applies to:** Proxmox VE 9.x, proxmod >= 0.1.0
+**Applies to:** Proxmox VE 9.x, proxmod >= 0.2.0
 
 The reference proxmod extension, and the executable form of the extension
 contract. It adds:
@@ -74,7 +74,7 @@ The full reference is [`docs/js-api.md`](../../docs/js-api.md).
 ```sh
 cd examples/proxmod-example-hello
 dpkg-buildpackage -us -uc -b
-apt install ../proxmod-example-hello_0.1.0_all.deb
+apt install ../proxmod-example-hello_0.2.0_all.deb
 ```
 
 Then, on the host:

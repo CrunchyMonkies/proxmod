@@ -1,3 +1,12 @@
+proxmod-example-hello (0.2.0) unstable; urgency=medium
+
+  * Demonstrate the config panel menu API: the extension now registers one
+    menu screen and one menu section alongside its node tab, so both modes
+    are exercised by something that ships.
+  * Requires proxmod (>= 0.2.0) for that API.
+
+ -- proxmod maintainers <proxmod@localhost>  Sun, 16 Aug 2026 00:00:00 +0000
+
 proxmod-example-hello (0.1.0) unstable; urgency=medium
 
   * Initial release: reference proxmod extension.

@@ -1,7 +1,7 @@
 # Compatibility with Proxmox VE
 
 **Status:** Draft
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the seam list is the set of `[PVE-F-nnn]` entries in
 [`pve-facts.md`](pve-facts.md), each regenerable with
@@ -129,7 +129,7 @@ harvest diff catches changes the runtime probes cannot.
 
 ## 7. Extension compatibility
 
-An extension declares `Depends: proxmod (>= 0.1.0)` and **no** dependency on a
+An extension declares `Depends: proxmod (>= 0.2.0)` and **no** dependency on a
 `pve-manager` version. Compatibility with Proxmox is proxmod's problem.
 
 Within proxmod, the promise for 0.x:
@@ -148,7 +148,7 @@ the meaning of a manifest field or an installed path.
 
 ## 8. Proxmox VE 8 and earlier
 
-Not supported by 0.1.0. Several seams differ, and the `-T`/`ExecReload`
+Not supported by 0.2.0. Several seams differ, and the `-T`/`ExecReload`
 analysis was done against 9.x only.
 
 Supporting 8.x is not obviously hard — it is a second fact harvest and a second

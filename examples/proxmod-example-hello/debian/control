@@ -13,7 +13,7 @@ Architecture: all
 Depends:
  ${misc:Depends},
  ${perl:Depends},
- proxmod (>= 0.1.0),
+ proxmod (>= 0.2.0),
 Description: reference proxmod extension for Proxmox VE
  A complete, minimal proxmod extension: one REST endpoint tree under
  /nodes/{node}/proxmod/example-hello and one tab in the node view of the

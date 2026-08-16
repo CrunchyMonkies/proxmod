@@ -33,7 +33,7 @@
 use strict;
 use warnings;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.2.0';
 
 # Honoured only for a non-root caller, so it is inert in production. t/10 uses
 # it to point every path at a temporary tree.

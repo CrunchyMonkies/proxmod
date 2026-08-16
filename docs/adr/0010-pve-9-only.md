@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-08
-**Applies to:** proxmod 0.1.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** [`docs/facts/pve-9.1.1.txt`](../facts/pve-9.1.1.txt),
 harvested by [`scripts/extract-pve-source.sh`](../../scripts/extract-pve-source.sh)
@@ -22,7 +22,7 @@ from a 9.1-1 ISO. None was checked against 8.x.
 
 ## Decision
 
-**PVE 9.x only for 0.1.0.** 8.x is explicitly unsupported — not "probably
+**PVE 9.x only.** 8.x is explicitly unsupported — not "probably
 works", not "untested but likely fine".
 
 This is a statement about what has been *verified*, and it is deliberately not

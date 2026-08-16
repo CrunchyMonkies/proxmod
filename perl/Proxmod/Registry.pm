@@ -10,7 +10,7 @@ use Proxmod::Log qw(log_debug log_warn);
 # rather than part-way through reading the registry.
 use JSON::PP ();
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.2.0';
 
 # The extension registry: which extensions exist, and in what order they load.
 #
