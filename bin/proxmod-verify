@@ -324,6 +324,40 @@ sub http_get {
     return ($code, $out);
 }
 
+# The extension registry, read at most once and never fatal.
+#
+# Two checks want it, and neither may fail the run because proxmod is not
+# installed where a fresh perl can see it — this tool has to keep working on a
+# host it was copied onto. Returns undef when the answer is genuinely unknown,
+# which callers must treat as "keep the old, stricter behaviour" rather than as
+# an empty registry.
+my ($registry, $registry_read);
+
+sub registry {
+    return $registry if $registry_read;
+    $registry_read = 1;
+
+    return $registry if !eval { require Proxmod::Registry; 1 };
+
+    # Under a test prefix the real /usr/share/proxmod does not exist and must
+    # not be consulted; @EXT_DIRS is absolute, so it has to be overridden.
+    my @dirs = $PREFIX
+        ? ("$PREFIX/usr/share/proxmod/extensions.d", "$PREFIX/etc/proxmod/extensions.d")
+        : ();
+    $registry = eval { Proxmod::Registry::load(@dirs ? (dirs => \@dirs) : ()) };
+    return $registry;
+}
+
+# How many extensions declare a frontend asset. This is the exact predicate
+# Proxmod::Frontend::install uses to decide whether to touch the index at all,
+# duplicated here on purpose: if the two ever disagree, this tool reports a
+# healthy host as broken. Keep them in step.
+sub frontend_wanted {
+    my $exts = registry();
+    return undef if !defined $exts;
+    return scalar grep { $_->{frontend} && @{ $_->{frontend}{assets} || [] } } @$exts;
+}
+
 sub check_http {
     return if !$opt{http};
     if (!have('curl')) {
@@ -343,11 +377,27 @@ sub check_http {
     # twice, which is a class of bug that presents as "my tab appears but the
     # click handler fires two times".
     my $tags = () = ($body =~ /\Q$LOADER_URL\E/g);
+
+    # ...unless nothing wants a frontend at all. Proxmod::Frontend leaves the
+    # index completely alone when no extension declares an asset, so on a
+    # backend-only host zero tags is the design working, not the injection
+    # failing. Reading that state as a failure is what made a correct host
+    # report "proxmod is NOT working correctly" (issue #1).
+    my $wanted = frontend_wanted();
+
     if ($disabled) {
         $tags == 0
             ? ok_('http.index', 'the index carries no loader tag, as configured')
             : warn_('http.index', 'proxmod is disabled but the index still has a loader tag',
                 "the daemon has not been restarted since $DISABLED appeared");
+    }
+    elsif (defined $wanted && $wanted == 0) {
+        $tags == 0
+            ? ok_('http.index',
+                'the index carries no loader tag, and no extension asks for one')
+            : warn_('http.index',
+                "the index carries $tags loader tag(s) but no extension declares a frontend asset",
+                'proxmod did not inject this; check for a stale tag or another patch');
     }
     elsif ($tags == 1) {
         ok_('http.index', 'the index carries exactly one loader tag');
@@ -362,6 +412,17 @@ sub check_http {
     }
 
     return if $disabled;
+
+    # Same reason, and this is the half that actually failed the run: with no
+    # frontend extension there is no `init` wrap either, so /proxmod/ is not a
+    # route and pveproxy's static fall-through answers the loader with a 500.
+    # Say so rather than skipping in silence — a dropped check reads exactly
+    # like a passed one.
+    if (defined $wanted && $wanted == 0) {
+        info_('http.loader', "skipped the $LOADER_URL checks",
+            'no extension declares a frontend asset, so proxmod serves no assets here');
+        return;
+    }
 
     ($code, my $loader) = http_get($LOADER_URL);
     if ($code ne '200') {

@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use lib 't/lib';
-use Test::More tests => 18;
+use Test::More tests => 21;
 use ProxmodTest qw(tempdir write_file repo_root);
 use File::Path ();
 
@@ -22,12 +22,31 @@ ok(-x $VERIFY, 'bin/proxmod-verify exists and is executable');
 my @UNITS = qw(pvedaemon.service pveproxy.service);
 my $WRAPPER = '/usr/lib/proxmod/proxmod-exec';
 
+# What verify() puts in PERL5LIB. Package-scoped rather than lexical so one
+# test can localise it, to prove that a registry proxmod-verify cannot read
+# falls back to the strict behaviour.
+our $PERL5LIB = repo_root() . '/perl';
+
 sub build_tree {
     my (%opt) = @_;
     my $p = tempdir();
 
     File::Path::make_path("$p/bin", "$p/sys", "$p/journal", "$p/http",
-        "$p/etc/proxmod", "$p/usr/share/proxmod/www");
+        "$p/etc/proxmod", "$p/etc/proxmod/extensions.d",
+        "$p/usr/share/proxmod/www", "$p/usr/share/proxmod/extensions.d");
+
+    # The registry decides whether a missing loader tag is a failure or the
+    # zero-footprint design working, so the HTTP tests have to say which kind
+    # of host they are describing. Written to the package-owned directory,
+    # which is where an extension's .deb drops its manifest.
+    my $order = 50;
+    for my $m (@{ $opt{manifests} || [] }) {
+        my %ext = (version => '1.0.0', %$m);
+        require JSON::PP;
+        write_file("$p/usr/share/proxmod/extensions.d/"
+                . sprintf('%02d-%s.conf', $order++, $ext{id}),
+            JSON::PP->new->canonical->encode(\%ext));
+    }
 
     my @units = @{ $opt{units} || \@UNITS };
     for my $u (@units) {
@@ -107,6 +126,11 @@ sub verify {
 
     local $ENV{PROXMOD_TEST_PREFIX} = $p;
     local $ENV{PATH} = "$p/bin:$ENV{PATH}";
+    # proxmod-verify reads the registry to tell a backend-only host apart from
+    # a broken injection. It is not under -T, so PERL5LIB reaches it — which is
+    # the only reason that branch is testable at all. One test points this
+    # somewhere empty on purpose, to prove the strict path is still there.
+    local $ENV{PERL5LIB} = $PERL5LIB;
 
     my $rc = system("$VERIFY " . join(' ', @args) . " >$out 2>&1");
     $rc = $rc == -1 ? -1 : $rc >> 8;
@@ -292,6 +316,20 @@ subtest '--json is parseable and carries the verdict' => sub {
     ok(scalar(@{ $data->{findings} }), 'and the individual findings are included');
 };
 
+# A host with something that actually wants a frontend, which is the only kind
+# of host on which a missing loader tag is a defect.
+my @WITH_FRONTEND = ({
+    id => 'has-ui',
+    backend  => { module => 'ProxmodExample::Hello' },
+    frontend => { assets => ['proxmod-has-ui.js'] },
+});
+
+# ...and one that does not: the case in issue #1.
+my @BACKEND_ONLY = ({
+    id      => 'csi-storage',
+    backend => { module => 'ProxmodExt::CSIStorage' },
+});
+
 subtest 'the live web interface must carry exactly one loader tag' => sub {
     plan tests => 6;
     # Zero means the injection is not happening. More than one means every
@@ -300,7 +338,7 @@ subtest 'the live web interface must carry exactly one loader tag' => sub {
     # proxmod.
     my $tag = '<script src="/proxmod/loader.js?v=1"></script>';
 
-    my $one = build_tree(http => {
+    my $one = build_tree(manifests => \@WITH_FRONTEND, http => {
         '/' => [ 200, "<html>$tag</html>\n" ],
         '/proxmod/loader.js' => [ 200, "var a=[];\n" ],
     });
@@ -308,12 +346,13 @@ subtest 'the live web interface must carry exactly one loader tag' => sub {
     is($rc, 0, 'one tag is healthy');
     like($out, qr{exactly one loader tag}, 'and is reported as such');
 
-    my $none = build_tree(http => { '/' => [ 200, "<html></html>\n" ] });
+    my $none = build_tree(manifests => \@WITH_FRONTEND,
+        http => { '/' => [ 200, "<html></html>\n" ] });
     ($rc, $out) = verify($none, '--url', 'test:');
     is($rc, 1, 'no tag fails');
     like($out, qr{no loader tag}, 'and says the frontend is not injecting');
 
-    my $two = build_tree(http => {
+    my $two = build_tree(manifests => \@WITH_FRONTEND, http => {
         '/' => [ 200, "<html>$tag$tag</html>\n" ],
         '/proxmod/loader.js' => [ 200, "var a=[];\n" ],
     });
@@ -322,10 +361,61 @@ subtest 'the live web interface must carry exactly one loader tag' => sub {
     like($out, qr{evaluated more than once}, 'with the consequence spelled out');
 };
 
+subtest 'a backend-only host is healthy with no loader tag at all' => sub {
+    plan tests => 6;
+    # Issue #1, reproduced. proxmod::Frontend leaves the index alone when no
+    # extension declares an asset, so there is no tag AND no /proxmod/ route —
+    # pveproxy's static fall-through answers the loader with a 500. Both are
+    # the zero-footprint promise being kept, and reading either as a defect
+    # made a correct host report "proxmod is NOT working correctly".
+    my $p = build_tree(manifests => \@BACKEND_ONLY, http => {
+        '/' => [ 200, "<html><script src=\"/pve2/js/pvemanagerlib.js\"></script></html>\n" ],
+        '/proxmod/loader.js' => [ 500, '' ],
+    });
+    my ($rc, $out) = verify($p, '--url', 'test:');
+    is($rc, 0, 'exits 0');
+    like($out, qr{proxmod is working}, 'and reports the host as working');
+    unlike($out, qr{FAIL}, 'with nothing reported as a failure');
+    like($out, qr{no extension asks for one}, 'the index check says why zero is correct');
+    like($out, qr{skipped the /proxmod/loader\.js checks},
+        'and the loader probe is skipped, not silently dropped');
+    unlike($out, qr{is not being served},
+        'so the 500 from the static fall-through is never reported');
+};
+
+subtest 'a loader tag with nothing asking for one is a warning' => sub {
+    plan tests => 3;
+    # Backend-only, but the index has a tag anyway: either a stale tag from an
+    # extension removed without a daemon restart, or something has patched
+    # index.html.tpl. Worth saying, not worth failing — the host still works.
+    my $p = build_tree(manifests => \@BACKEND_ONLY, http => {
+        '/' => [ 200, qq{<html><script src="/proxmod/loader.js?v=1"></script></html>\n} ],
+        '/proxmod/loader.js' => [ 200, "var a=[];\n" ],
+    });
+    my ($rc, $out) = verify($p, '--url', 'test:');
+    is($rc, 0, 'exits 0');
+    like($out, qr{\[ warn \]}, 'at warning level');
+    like($out, qr{no extension declares a frontend asset}, 'saying what does not add up');
+};
+
+subtest 'a registry that cannot be read keeps the strict behaviour' => sub {
+    plan tests => 2;
+    # The skip must never become the default. When the registry cannot be read
+    # at all, "no tag" has to stay a failure — otherwise a host where proxmod
+    # is half-installed reports clean, which is the exact failure mode this
+    # whole tool exists to prevent. Unknown is not the same as none.
+    my $p = build_tree(manifests => \@BACKEND_ONLY,
+        http => { '/' => [ 200, "<html></html>\n" ] });
+    local $PERL5LIB = '/nonexistent';
+    my ($rc, $out) = verify($p, '--url', 'test:');
+    is($rc, 1, 'exits 1 even though the host is in fact backend-only');
+    like($out, qr{no loader tag}, 'and still names the missing tag');
+};
+
 subtest 'an asset the loader names but nothing serves is a failure' => sub {
     plan tests => 2;
     # The signature of a manifest naming a file its package forgot to ship.
-    my $p = build_tree(http => {
+    my $p = build_tree(manifests => \@WITH_FRONTEND, http => {
         '/' => [ 200, qq{<html><script src="/proxmod/loader.js?v=1"></script></html>\n} ],
         '/proxmod/loader.js' => [ 200,
             qq{var assets=[{"id":"gone","url":"/proxmod/gone.js"}];\n} ],

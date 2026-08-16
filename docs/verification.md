@@ -116,27 +116,57 @@ run `proxmod-verify` after one.
 
 ### `http.index`
 
-- **ok — "exactly one loader tag"** — what you want.
-- **error — "no loader tag"** — `pveproxy` has proxmod loaded but the frontend
-  injection did not happen. The seam probe likely failed; check the journal for
-  a warning from `Proxmod::Frontend`.
+What counts as correct here depends on whether any extension actually wants a
+frontend. `Proxmod::Frontend` leaves the index completely alone when none does,
+so on a **backend-only host the absence of a loader tag is the design working**
+— see "A host with no frontend extension" below.
+
+- **ok — "exactly one loader tag"** — what you want, on a host with a frontend
+  extension.
+- **ok — "no loader tag, and no extension asks for one"** — backend-only host.
+  Nothing is wrong; proxmod's zero-footprint promise means there is nothing to
+  see.
+- **ok — "no loader tag, as configured"** — the kill switch is set.
+- **error — "no loader tag"** — an extension declares a frontend asset and the
+  tag is missing anyway. The injection did not happen; the seam probe likely
+  failed. Check the journal for a warning from `Proxmod::Frontend`.
 - **error — "N loader tags"** — two things are injecting. Usually a patch spec
   doing by hand what proxmod already does at runtime. `proxmodctl patch status`.
-- **warn — "disabled but the index still has a loader tag"** — a file on disk
-  carries a tag that proxmod is not putting there. Something patched
+- **warn — "N loader tag(s) but no extension declares a frontend asset"** —
+  proxmod did not put that there. Either a stale tag from an extension that has
+  since been removed without a daemon restart, or something has patched
   `index.html.tpl`.
+- **warn — "disabled but the index still has a loader tag"** — the kill switch
+  is set but the daemon has not been restarted since.
+- **warn — "could not fetch the web interface index"** — `GET /` did not answer
+  200. That is a `pveproxy` problem, not a proxmod one, so it does not fail the
+  run; the rest of the HTTP checks are skipped.
 
 ### `http.loader`
 
 - **error — "`/proxmod/loader.js` is not being served"** — the `init` wrap did
   not register the route. Journal.
+- **info — "skipped the `/proxmod/loader.js` checks"** — no extension declares a
+  frontend asset, so proxmod deliberately registers no route. Not a failure, and
+  reported explicitly rather than silently dropped: a check that vanishes reads
+  exactly like a check that passed.
 
-Note: a loader proxmod could not *build* returns **HTTP 200 with an inert
-comment**, not a 500 — a 500 would put a red line in every administrator's
-console on every page load and change nothing. So "served, but empty" is a real
-state; the journal is where the reason is.
+Note on what a *served* loader can contain: once the route exists, a loader
+proxmod could not *build* returns **HTTP 200 with an inert comment**, not a 500 —
+a 500 would put a red line in every administrator's console on every page load
+and change nothing. So "served, but empty" is a real state; the journal is where
+the reason is.
 
-### `http.asset<n>`
+That only holds once the route exists. Before it does — on a backend-only host,
+where the `init` wrap never ran — `/proxmod/loader.js` matches nothing in
+`{pages}` or `{dirs}` [PVE-F-024] and `pveproxy`'s static fall-through answers
+**500**. That is why this check is skipped rather than made lenient: a 500 there
+is normal, and a 500 anywhere else is not.
+
+### `http.asset/proxmod/<file>.js`
+
+One finding per distinct asset the loader references; the asset's own path is
+part of the finding id, so monitoring can tell which file moved.
 
 - **error — "`<asset>` is referenced but not served"** — a manifest names an
   asset that is not in `/usr/share/proxmod/www/`. The extension package is
@@ -144,13 +174,18 @@ state; the journal is where the reason is.
 
 ### `structure`
 
-Replays registered routes through `find_handler` and asks what they actually
-resolve to. Registration succeeding and an endpoint being reachable are
-different questions: a path behind a greedy `fragmentDelimiter => ''` subtree
-registers perfectly and never resolves [PVE-F-051].
+Loads the extension registry in a fresh `perl` and reports which backend
+extensions it finds. This is a sanity check on the registry, not a replay of the
+API tree, and it is deliberately never fatal — `check_live` is what is
+authoritative about whether anything is actually running.
 
+- **info — "N backend extension(s) in the registry"** — normal.
+- **info — "no backend extensions are registered"** — normal on a
+  frontend-only host.
 - **warn — "could not load proxmod to replay the API tree"** — this check needs
   PVE modules present; it is skipped rather than failed when they are not.
+- **warn — "could not read the extension registry"** — a manifest is malformed.
+  `proxmodctl list` for which.
 
 ### Levels
 
@@ -160,6 +195,32 @@ an extension should not get a red alert for it.
 
 That said — read the warnings. `reload.<unit>` is a warning and it means proxmod
 will disappear at the next upgrade.
+
+### A host with no frontend extension
+
+A host whose extensions are all backend-only — a CSI driver, a metrics
+collector, anything that adds API endpoints and no UI — is a **fully healthy
+host**, and `proxmod-verify` exits 0 on it.
+
+This is worth stating because the evidence looks alarming if you go looking by
+hand:
+
+| What you see | Why |
+|---|---|
+| no `/proxmod/loader.js` tag in the index | `Proxmod::Frontend::install` returns immediately when no extension declares an asset; `get_index` is never wrapped |
+| `GET /proxmod/loader.js` → **500** | the `init` wrap never ran either, so `/proxmod/` is not in `{pages}` or `{dirs}` [PVE-F-024] and `pveproxy` falls through to its static handler |
+| nothing in the journal about it | the no-op is logged at debug level, because on a backend-only host it would otherwise be printed on every daemon start forever |
+
+All three are the zero-footprint promise being kept: proxmod does not touch the
+web interface unless something asked it to. `proxmod-verify` reads the registry
+to tell this state apart from a genuinely broken injection, reports `http.index`
+as **ok** and `http.loader` as **info — skipped**, and exits 0.
+
+If you want to confirm it rather than infer it:
+
+```sh
+proxmod-verify --json | jq -r '.findings[] | select(.id | startswith("http.")) | "\(.level)\t\(.id)\t\(.title)"'
+```
 
 ---
 
@@ -258,5 +319,3 @@ proxmodctl logs | grep -i 'fail\|error\|warn'
 - [`security.md`](security.md) — the refusals in §5
 - [`testing.md`](testing.md) — the test suites, which check the same claims on a
   VM rather than on your host
-</content>
-</invoke>
