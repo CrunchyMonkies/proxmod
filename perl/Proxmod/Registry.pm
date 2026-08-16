@@ -335,4 +335,60 @@ sub load {
     return _resolve_order(\@candidates);
 }
 
+# ---------------------------------------------------------------------------
+# A short digest of "what proxmod would load right now".
+#
+# The daemons log it at startup (Proxmod::Boot) and proxmod-verify recomputes it
+# from disk, so `installed an extension but never restarted` becomes a visible
+# difference rather than an invisible one. Both sides call this function, so
+# they agree by construction rather than by two implementations staying in step.
+#
+# It is a pure function of the *effective* extension list, deliberately:
+#
+#  * counting extensions instead would not work. pveproxy runs the frontend
+#    stage and pvedaemon does not, so the two daemons legitimately report
+#    different counts for one registry. A digest of the list itself does not
+#    care which daemon is asking.
+#  * proxmod's own version is folded in, so upgrading proxmod is itself a
+#    change. That is what makes `dpkg -i proxmod` restart the daemons onto the
+#    new modules instead of leaving the old ones resident. It is read from this
+#    module rather than from Proxmod.pm on purpose: Proxmod.pm's INIT block
+#    boots proxmod into whatever process loads it, so proxmod-verify must never
+#    require it. Every module in the distribution carries the same $VERSION, and
+#    docs/conventions.md is where that is enforced.
+#  * a masked or disabled manifest contributes nothing, because it contributes
+#    nothing to what runs.
+#
+# Serialised by hand rather than through JSON or Data::Dumper: this value has to
+# be stable across Perl versions and hash orderings for as long as a daemon
+# stays up, and neither of those promises that.
+sub fingerprint {
+    my ($exts) = @_;
+    $exts ||= [];
+
+    require Digest::SHA;
+
+    my $canon = "proxmod\0" . ($VERSION // '?') . "\n";
+    for my $e (@$exts) {
+        my @f = (
+            $e->{id}       // '',
+            $e->{basename} // '',
+            $e->{version}  // '',
+            defined $e->{order} ? $e->{order} : '',
+        );
+
+        if (my $be = $e->{backend}) {
+            push @f, 'backend', ($be->{module} // ''),
+                join(',', sort keys %{ $be->{daemons} || {} });
+        }
+        if (my $fe = $e->{frontend}) {
+            push @f, 'frontend', join(',', @{ $fe->{assets} || [] });
+        }
+
+        $canon .= join("\0", @f) . "\n";
+    }
+
+    return substr(Digest::SHA::sha256_hex($canon), 0, 12);
+}
+
 1;

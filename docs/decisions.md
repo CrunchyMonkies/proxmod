@@ -26,6 +26,7 @@ reason is here.
 | [0008](adr/0008-patch-facility-ships-inert.md) | A managed patch facility, shipped inert | Accepted |
 | [0009](adr/0009-verify-the-running-daemon.md) | Verify the running daemon, not a fresh process | Accepted |
 | [0010](adr/0010-pve-9-only.md) | Target Proxmox VE 9.x only | Accepted |
+| [0011](adr/0011-registry-fingerprint.md) | Fingerprint the registry a daemon loaded | Accepted |
 
 ---
 
@@ -44,7 +45,9 @@ stage and every extension runs inside its own `eval`.
 It also creates the one problem the rest of the design has to answer: **if
 proxmod fails quietly, nothing tells you it failed.** That is what 0009 is for,
 and it is why the monitoring obligation is stated as an obligation rather than a
-suggestion.
+suggestion. 0011 is the same lesson learned a second time, from a live cluster:
+a check that only asks *is the daemon healthy* will report a healthy host that
+is serving an extension the administrator removed an hour ago.
 
 The second through-line is narrower and just as load-bearing: **the prior art's
 defects were structural, not careless.** `pmxxpuiov` is a carefully written
@@ -83,7 +86,8 @@ Not everything warrants an ADR. These are documented at the point of use:
 | `Ext.ClassManager.get()` probing before defining an override | [`frontend-extensions.md`](frontend-extensions.md) §4 |
 | Extension load order: `requires` topologically sorted, then `order`, then filename | [`extension-manifest.md`](extension-manifest.md) |
 | Masking a packaged extension by basename from `/etc` | [`extension-manifest.md`](extension-manifest.md) |
-| `--live-only` deliberately narrow | [`verification.md`](verification.md) §4 |
+| `--live-only` and `--registry-only` deliberately narrow, and separate | [`verification.md`](verification.md) §4, ADR 0011 |
+| The loop-breaker stamp at `/var/lib/proxmod/registry.stamp` | ADR 0011 |
 | Trigger paths always exit 0 | ADR 0003 |
 
 ## Writing a new ADR

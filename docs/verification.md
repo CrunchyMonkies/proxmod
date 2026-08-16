@@ -114,6 +114,35 @@ run `proxmod-verify` after one.
   an extension is not. This is a warning, not an error, because the isolation is
   designed behaviour. `proxmodctl logs` says which and why.
 
+### `registry.<unit>`
+
+`live.<unit>` answers *is proxmod running*. This answers the question directly
+after it: **is what it loaded still what is on disk?** A daemon reads the
+extension registry once, at startup. Installing, removing or reconfiguring an
+extension changes the registry and nothing else — the drop-ins are untouched,
+no file is patched, and the daemon serving requests is in perfect health while
+serving a registry that no longer exists.
+
+Each daemon logs a short fingerprint of the registry it loaded in its `booted`
+line; this check recomputes that fingerprint from disk and compares. Two
+daemons on one registry always produce the same value, so the comparison means
+the same thing in `pvedaemon` and `pveproxy` — which a count of loaded
+extensions would not, since only `pveproxy` runs the frontend stage.
+
+- **ok — "`<unit>` is running the current extension registry"** — the detail is
+  the fingerprint, which is worth recording: it is what tells you two nodes in
+  a cluster are running the same set of extensions.
+- **warn — "`<unit>` is running an older extension registry"** — something was
+  installed or removed and the daemon has not been restarted since.
+  `proxmodctl reapply` does it. This is a **warning, not an error**: in the
+  ordinary case a dpkg trigger is converging it moments later, and a tool that
+  went red for the seconds in between would teach people to ignore it.
+- **warn — "`<unit>` predates registry fingerprinting"** — the daemon has been
+  up since before proxmod 0.2.0, so it cannot say what it loaded. Treated as
+  out of date, which is what makes the upgrade converge by itself.
+- **info — "could not read the extension registry"** — this check could not run.
+  Nothing is concluded from it in either direction.
+
 ### `http.index`
 
 What counts as correct here depends on whether any extension actually wants a
@@ -224,12 +253,23 @@ proxmod-verify --json | jq -r '.findings[] | select(.id | startswith("http.")) |
 
 ---
 
-## 4. `--live-only`
+## 4. `--live-only` and `--registry-only`
 
-The narrow question `proxmod-reapply` asks before deciding whether to restart:
-are the running daemons loaded?
+The two narrow questions `proxmod-reapply` asks before deciding whether to
+restart. They are separate flags rather than one broader check, so that
+widening either cannot silently widen the other:
 
-**It must not be widened.** A failing HTTP check is not a reason to bounce
+| | asks | exit |
+|---|---|---|
+| `--live-only` | are the running daemons loaded at all? | 0 yes, 1 no |
+| `--registry-only` | is what they loaded still what is on disk? | 0 up to date, 1 out of date, 2 could not tell |
+
+`--registry-only` also prints the current on-disk fingerprint on stdout, which
+is what `reapply` records to avoid restarting twice for one registry it cannot
+converge. `--quiet` suppresses that and leaves only the exit status. A disabled
+host is never "out of date": nothing is loaded, so nothing can be stale.
+
+**Neither must be widened.** A failing HTTP check is not a reason to bounce
 `pvedaemon` — a 404 on one asset would become a hypervisor API interruption, and
 a restart would not fix it anyway.
 

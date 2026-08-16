@@ -113,6 +113,32 @@ proxmodctl reapply --force
 
 ## 3. Extension-shaped problems
 
+### I installed (or removed) an extension and nothing happened
+
+`proxmodctl list` shows it, `proxmod-verify` exits 0, and the extension still
+does nothing — or the one you removed still answers. A running daemon reads the
+registry once, at startup, so a registry change only takes effect when the
+daemons restart.
+
+```sh
+proxmod-verify | grep registry     # `registry.<unit>` warns if they are stale
+proxmodctl reapply                 # converge, which restarts them if they are
+```
+
+Normally the dpkg trigger has already done this. If it did not, the reapply run
+says why:
+
+| `proxmodctl logs` says | Cause |
+|---|---|
+| `still not running registry <fp> after a restart for it` | The daemons restarted and came back on the same old registry. Something is stopping the new one loading — read `journalctl -u pvedaemon -u pveproxy \| grep proxmod:`. proxmod deliberately stops retrying at this point rather than restarting on every apt run |
+| nothing at all | The trigger never fired. `dpkg-trigger --by-package proxmod proxmod-reapply` |
+| `proxmod is disabled` | The kill switch at `/etc/proxmod/disabled`. `proxmodctl enable` |
+
+`proxmod-verify --registry-only` answers just this question: exit 0 up to date,
+1 out of date, 2 could not tell, with the fingerprint on stdout. The same
+fingerprint on two nodes means the same registry, which makes it the honest way
+to ask whether a cluster agrees — see [`cli.md`](cli.md) §2.
+
 ### One extension is missing; others work
 
 Working as designed — extensions are isolated. Find out why:

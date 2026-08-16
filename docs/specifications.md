@@ -353,12 +353,24 @@ never renders a page; wrapping it there would be pure risk for no gain.
 **[REQ-FW-018]** On completion `boot()` MUST emit exactly one line of the form
 
 ```
-proxmod: booted daemon=<name> extensions=<n> failed=<n>
+proxmod: booted daemon=<name> extensions=<n> failed=<n> registry=<fingerprint>
 ```
 
 This line is the contract with `proxmod-verify` ([§15](#15-observability-and-verification)),
 which greps for it in the journal of the *running process*. Changing its shape
-in one place and not the other is how a verification tool starts lying.
+in one place and not the other is how a verification tool starts lying. New
+fields are appended, never inserted, so that a daemon started by an older
+proxmod is still readable — and `registry=` is optional for exactly that reason,
+its absence meaning "this daemon predates fingerprinting", which
+`proxmod-verify` treats as stale.
+
+**[REQ-FW-018a]** The `registry=` fingerprint MUST be a pure function of the
+effective registry and of proxmod's own version — not of what this particular
+daemon loaded. `pveproxy` runs the frontend stage and `pvedaemon` does not, so
+any value derived from what each one loaded differs between them for one
+registry and cannot be compared with anything. Both daemons MUST report the same
+fingerprint for the same registry. Computing it MUST NOT be able to stop the
+daemon booting; if it dies, the field is omitted. See ADR 0011.
 
 ### 5.4 Process placement
 
@@ -1134,9 +1146,17 @@ non-zero exit from a trigger can wedge an entire `apt dist-upgrade`.
 mirroring `pve-manager`'s own guard [PVE-F-005].
 
 **[REQ-PKG-023]** It MUST restart the wrapped daemons **only** when something
-actually changed, or when `proxmod-verify --live-only` reports that the running
-daemons are not loading proxmod. A converger that restarts on every apt run is a
-converger administrators disable.
+actually changed, when `proxmod-verify --live-only` reports that the running
+daemons are not loading proxmod, or when `proxmod-verify --registry-only`
+reports that they loaded a registry that is no longer the one on disk. A
+converger that restarts on every apt run is a converger administrators disable;
+a converger that never restarts when the registry moved is one that silently
+does nothing when an extension is installed or removed.
+
+**[REQ-PKG-023a]** The registry condition MUST be bounded by a loop-breaker:
+`proxmod-reapply` records the fingerprint it restarted for and MUST NOT restart
+a second time for that same fingerprint, reporting the condition instead. A
+different fingerprint MUST still restart. See ADR 0011.
 
 **[REQ-PKG-024]** It MUST run `systemctl daemon-reload` only when a drop-in
 actually changed.
@@ -1271,8 +1291,22 @@ requests our code"*. Only the running process's own log can.
 | installed | proxmod present, kill switch state |
 | drift | the **live** `ExecStart`/`ExecReload` still resolve to proxmod's — this is the `ExecStart=` race, N-U2 |
 | live | the primary gate above, per wrapped daemon |
+| registry | the fingerprint in that daemon's `booted` line still matches the registry on disk — an extension installed or removed since it started, or a proxmod upgraded underneath it |
 | http | the index carries **exactly one** loader tag; `/proxmod/loader.js` and every declared asset return 200 |
 | structure | a `find_handler` replay per registered route, catching greedy-param shadowing [REQ-BE-019] |
+
+**[REQ-FW-036a]** `proxmod-verify` MUST expose the registry question on its own
+narrow flag, `--registry-only`, separate from `--live-only`: exit **0** current,
+**1** stale, **2** could not tell, printing the on-disk fingerprint on stdout.
+Both flags exist because `proxmod-reapply` turns each into a daemon restart, and
+neither MUST be widened to take any other check into account — a failing HTTP
+check is not a reason to bounce `pvedaemon`. Keeping them separate is what stops
+widening one from silently widening the other.
+
+**[REQ-FW-036b]** A stale registry MUST be reported as `warn`, not `error`. The
+dpkg trigger converges it moments later; a tool that goes red for those seconds
+is a tool that gets ignored, and being ignored is the one thing this tool must
+never be.
 
 **[REQ-FW-037]** Findings MUST be levelled. Only `error` decides the exit status;
 `warn` is reported but does not, because degradation is designed behaviour and an
@@ -1387,6 +1421,9 @@ An implementation, or a release, conforms when every row passes. "Unit" is
 | C-87 | [REQ-PKG-021] | `proxmod-reapply` exits 0 from the trigger path even when convergence failed | Unit `t/09` |
 | C-88 | [REQ-PKG-010]–[REQ-PKG-013] | `apt purge`: drop-ins gone, daemons active, `dpkg -V pve-manager` clean, another package's file under `/usr/share/proxmod/www` untouched | **QEMU** |
 | C-89 | [REQ-SEC-011] | The string `/etc/pve` appears in no maintainer script, in `proxmod-reapply`, or in the boot-time unit | Unit `t/09` |
+| C-127 | [REQ-PKG-023] | A daemon running an older registry is restarted; one running the current registry is not | Unit `t/09`, `t/10`, QEMU `11` |
+| C-128 | [REQ-PKG-023a] | The same stale fingerprint twice restarts once and then warns; a different one still restarts | Unit `t/09` |
+| C-129 | [REQ-PKG-023] | Removing an extension package takes it out of the **running** daemons, with no `--force` | **QEMU** |
 
 ### 16.6 Security
 
@@ -1674,7 +1711,8 @@ express.
 | REQ-FW-015 | Load nothing outside `pvedaemon`/`pveproxy` | 5.3 |
 | REQ-FW-016 | Each boot stage is independently contained | 5.3 |
 | REQ-FW-017 | The frontend stage runs in `pveproxy` only | 5.3 |
-| REQ-FW-018 | Exactly one `booted daemon=… extensions=… failed=…` line | 5.3 |
+| REQ-FW-018 | Exactly one `booted daemon=… extensions=… failed=… registry=…` line | 5.3 |
+| REQ-FW-018a | The fingerprint is a function of the registry, not of what one daemon loaded | 5.3 |
 | REQ-FW-019 | Per-extension `eval` isolation | 6.5 |
 | REQ-FW-020 | A failed extension logs once and is counted | 6.5 |
 | REQ-FW-021 | Never `eval "require $module"` | 6.5 |
@@ -1692,7 +1730,9 @@ express.
 | REQ-FW-033 | Prefix `proxmod:`; never a newline in a message | 15.1 |
 | REQ-FW-034 | Prefix and `booted` shape are cross-program contract | 15.1 |
 | REQ-FW-035 | The primary gate is the running process's journal | 15.2 |
-| REQ-FW-036 | The five verification checks | 15.2 |
+| REQ-FW-036 | The six verification checks | 15.2 |
+| REQ-FW-036a | `--registry-only`, as narrow as `--live-only` and separate from it | 15.2 |
+| REQ-FW-036b | A stale registry is a `warn`, not an `error` | 15.2 |
 | REQ-FW-037 | Only `error` decides the exit status | 15.2 |
 | REQ-FW-038 | Exit 0 / 1 / 64; `--json`, `--quiet` | 15.2 |
 | REQ-FW-039 | Produce a report on a broken host | 15.2 |
@@ -1826,7 +1866,8 @@ express.
 | REQ-PKG-020 | That unit does not depend on `pve-cluster` | 13.2 |
 | REQ-PKG-021 | Idempotent, locked, always exits 0 from a trigger | 13.3 |
 | REQ-PKG-022 | Skip during `/proxmox_install_mode` | 13.3 |
-| REQ-PKG-023 | Restart only when something changed or the live check fails | 13.3 |
+| REQ-PKG-023 | Restart only when something changed, the live check fails, or the registry moved | 13.3 |
+| REQ-PKG-023a | The registry restart is bounded by a loop-breaker | 13.3 |
 | REQ-PKG-024 | `daemon-reload` only on a real change | 13.3 |
 | REQ-PKG-025 | Self-heal to stock if a daemon does not come back | 13.3 |
 | REQ-PKG-026 | A patch failure cannot reach the self-healing path | 13.3 |

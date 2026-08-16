@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use lib 't/lib';
-use Test::More tests => 26;
+use Test::More tests => 33;
 use ProxmodTest qw(tempdir write_file repo_root);
 use File::Path ();
 
@@ -54,9 +54,32 @@ EOF
     chmod 0755, "$p/bin/systemctl" or die "chmod: $!";
 
     # proxmod-verify does not exist yet in the build; when a test wants one it
-    # asks for a stub with a fixed exit status.
-    if (defined $opt{verify_rc}) {
-        write_file("$p/usr/sbin/proxmod-verify", "#!/bin/sh\nexit $opt{verify_rc}\n");
+    # asks for a stub.
+    #
+    # The stub answers reapply's two gates separately, because reapply asks them
+    # separately: --live-only ("is proxmod loaded at all") and --registry-only
+    # ("is what they loaded still what is on disk", answered with a fingerprint
+    # on stdout). Its answers come out of files in the tree rather than being
+    # baked in, so a test can change them between two runs — which is the only
+    # way to exercise the loop-breaker.
+    if (defined $opt{verify_rc} || defined $opt{registry_rc}) {
+        verify_says($p,
+            live     => (defined $opt{verify_rc}   ? $opt{verify_rc}   : 0),
+            registry => (defined $opt{registry_rc} ? $opt{registry_rc} : 0),
+            fingerprint => (defined $opt{registry_fp} ? $opt{registry_fp} : 'aaaaaaaaaaaa'),
+        );
+        write_file("$p/usr/sbin/proxmod-verify", <<"EOF");
+#!/bin/sh
+echo "\$*" >> "$p/verify.log"
+for a in "\$@"; do
+    if [ "\$a" = '--registry-only' ]; then
+        fp=\$(cat "$p/verify.fingerprint" 2>/dev/null)
+        [ -n "\$fp" ] && echo "\$fp"
+        exit "\$(cat "$p/verify.registry.rc")"
+    fi
+done
+exit "\$(cat "$p/verify.live.rc")"
+EOF
         chmod 0755, "$p/usr/sbin/proxmod-verify" or die "chmod: $!";
     }
 
@@ -103,6 +126,17 @@ sub slurp {
 }
 
 sub dropin { my ($p, $u) = @_; return "$p/$DST/$u.d/10-proxmod.conf" }
+
+# Set (or change, between two runs) what the proxmod-verify stub will say.
+sub verify_says {
+    my ($p, %what) = @_;
+    write_file("$p/verify.live.rc",     "$what{live}\n")        if defined $what{live};
+    write_file("$p/verify.registry.rc", "$what{registry}\n")    if defined $what{registry};
+    write_file("$p/verify.fingerprint", "$what{fingerprint}\n") if defined $what{fingerprint};
+    return;
+}
+
+sub restarts { my ($calls) = @_; return scalar grep { /^try-restart/ } @$calls }
 
 subtest 'a fresh host is converged and the daemons restarted once' => sub {
     plan tests => 6;
@@ -438,4 +472,106 @@ subtest 'a failing patch never tears out the drop-ins' => sub {
     ok(-f "$p/$DST/pveproxy.service.d/10-proxmod.conf", 'the drop-in is still there');
     is_deeply($calls, [], 'and nothing was restarted over it');
     like($err, qr{proxmod itself is unaffected}, 'the journal says which half broke');
+};
+
+# --- the registry gate ----------------------------------------------------
+#
+# The gap this closes: installing an extension package writes a manifest and
+# fires our trigger. The drop-ins do not change, nothing is patched, and both
+# daemons are perfectly healthy — so every other gate here says "converged" and
+# the extension the administrator just installed does nothing at all.
+
+subtest 'a stale extension registry restarts the daemons' => sub {
+    plan tests => 3;
+    my $p = build_tree(verify_rc => 0, registry_rc => 1, registry_fp => 'abc123abc123');
+    reapply($p);                      # first run converges the drop-ins
+
+    my ($rc, $err, $calls) = reapply($p);
+    is($rc, 0, 'exits 0');
+    is(restarts($calls), 2, 'both daemons are restarted, though nothing on disk changed');
+    like($err, qr{older extension registry}, 'and the reason is in the journal');
+};
+
+subtest 'a current extension registry restarts nothing' => sub {
+    plan tests => 2;
+    my $p = build_tree(verify_rc => 0, registry_rc => 0, registry_fp => 'abc123abc123');
+    reapply($p);
+
+    my (undef, $err, $calls) = reapply($p);
+    is_deeply($calls, [], 'no systemctl call');
+    like($err, qr{already converged}, 'nothing to do');
+};
+
+subtest 'a registry that will not converge is not chased forever' => sub {
+    plan tests => 5;
+    # The loop-breaker. If the daemons come back still not running the registry
+    # we restarted them for, restarting them again will not help — and doing it
+    # on every trigger is the restart storm this project exists to not repeat.
+    my $p = build_tree(verify_rc => 0, registry_rc => 1, registry_fp => 'abc123abc123');
+    reapply($p);
+
+    my (undef, undef, $first) = reapply($p);
+    is(restarts($first), 2, 'the first stale run restarts');
+
+    my (undef, $err, $second) = reapply($p);
+    is(restarts($second), 0, 'the second, for the same registry, does not');
+    like($err, qr{still not running registry abc123abc123}, 'and says why');
+    like($err, qr{journalctl}, 'and where to look');
+
+    # It must not become a permanent mute: a registry that changes again is a
+    # new fact, and gets a restart.
+    verify_says($p, fingerprint => 'def456def456');
+    my (undef, undef, $third) = reapply($p);
+    is(restarts($third), 2, 'a different registry is restarted for');
+};
+
+subtest 'a registry that converges leaves no stamp behind' => sub {
+    plan tests => 3;
+    my $p = build_tree(verify_rc => 0, registry_rc => 1, registry_fp => 'abc123abc123');
+    reapply($p);
+
+    my (undef, undef, $first) = reapply($p);
+    is(restarts($first), 2, 'the stale run restarts');
+
+    # The restart worked: the daemons are now on that registry.
+    verify_says($p, registry => 0);
+    my (undef, undef, $second) = reapply($p);
+    is(restarts($second), 0, 'and the next run has nothing to do');
+    ok(!-e "$p/var/lib/proxmod/registry.stamp",
+        'the loop-breaker stamp is cleared, so the same registry could be chased again');
+};
+
+subtest 'a verify that cannot answer the registry question is not a restart' => sub {
+    plan tests => 2;
+    # Exit 2 is "could not tell" and 64 is an older proxmod-verify that has no
+    # such flag. Both must mean "not stale": restarting hypervisor daemons on a
+    # check we could not run is the failure mode, not the safe default.
+    for my $rc (2, 64) {
+        my $p = build_tree(verify_rc => 0, registry_rc => $rc);
+        reapply($p);
+        my (undef, undef, $calls) = reapply($p);
+        is(restarts($calls), 0, "exit $rc from --registry-only restarts nothing");
+    }
+};
+
+subtest 'the kill switch outranks a stale registry' => sub {
+    plan tests => 3;
+    my $p = build_tree(verify_rc => 1, registry_rc => 1, registry_fp => 'abc123abc123');
+    write_file("$p/etc/proxmod/disabled", '');
+
+    my ($rc, $err, $calls) = reapply($p);
+    is($rc, 0, 'exits 0');
+    is_deeply([ grep { /restart/ } @$calls ], [], 'nothing is restarted');
+    like($err, qr{disabled by}, 'and it names the switch');
+};
+
+subtest 'a daemon with no proxmod at all outranks a stale registry' => sub {
+    plan tests => 1;
+    # Both gates are unhappy. The more serious one has to be the one reported,
+    # or the journal sends the administrator after the wrong problem.
+    my $p = build_tree(verify_rc => 1, registry_rc => 1, registry_fp => 'abc123abc123');
+    reapply($p);
+
+    my (undef, $err) = reapply($p);
+    like($err, qr{not loading proxmod}, 'the journal names the worse failure');
 };

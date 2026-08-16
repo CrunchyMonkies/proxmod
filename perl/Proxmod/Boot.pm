@@ -129,12 +129,32 @@ sub boot {
         $failed += $r->{failed};
     }
 
+    # The fingerprint of the registry this process actually loaded. It is what
+    # lets proxmod-verify tell "running" from "running the current registry",
+    # and so what lets proxmod-reapply know an installed extension has not gone
+    # live yet. Appended to the end of the line, never inserted: the existing
+    # extensions=/failed= parsing has to keep working against a daemon that has
+    # been up since before this field existed.
+    #
+    # Guarded, and last: a fingerprint we could not compute is worth losing.
+    # Killing a hypervisor daemon over a digest is not.
+    my $fp = eval {
+        local $SIG{__DIE__} = 'DEFAULT';
+        Proxmod::Registry::fingerprint($exts);
+    };
+    if (!defined $fp) {
+        my $err = $@ || 'unknown error';
+        $err =~ s/\s+$//;
+        log_warn("could not compute the registry fingerprint: $err");
+    }
+
     # This line is the signal. proxmod-verify treats the *live* journal since
     # the unit's last start as the source of truth about whether proxmod is
     # actually running, rather than asking a fresh perl whether it could — the
     # distinction is exactly the one that let a comparable tool ship a verify
     # that passed while its endpoint had never loaded.
-    log_info("$BOOTED_MARKER daemon=$daemon extensions=$loaded failed=$failed");
+    log_info("$BOOTED_MARKER daemon=$daemon extensions=$loaded failed=$failed"
+        . (defined $fp ? " registry=$fp" : ''));
 
     return;
 }

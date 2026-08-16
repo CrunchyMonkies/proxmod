@@ -180,8 +180,13 @@ implementation of "make the host match the package" in the source tree.
 It is idempotent, takes an `flock`, skips while `/proxmox_install_mode` exists,
 and — the part that matters —
 
-> **restarts the daemons only if something actually changed, or if
-> `proxmod-verify` says the live daemons are not loaded.**
+> **restarts the daemons only if something actually changed, if
+> `proxmod-verify` says the live daemons are not loaded, or if they loaded a
+> registry that is no longer the one on disk.**
+
+That last one is what makes installing or removing an extension package take
+effect without `--force`: a manifest appearing in `extensions.d` changes nothing
+the other conditions watch. See [ADR 0011](adr/0011-registry-fingerprint.md).
 
 The prior art restarted `pveproxy` on *every* apt invocation via a
 `DPkg::Post-Invoke` hook. On a busy host that is an outage on every

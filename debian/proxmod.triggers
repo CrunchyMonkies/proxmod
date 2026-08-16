@@ -19,10 +19,14 @@ interest-noawait /usr/share/proxmod/extensions.d
 # management tool dropping a file here should converge the same way.
 interest-noawait /etc/proxmod/extensions.d
 
-# Frontend assets. A frontend-only extension needs no daemon restart — the
-# loader is generated per request from the live registry — but the manifest
-# that names the asset lives above, and this catches an asset shipped in a
-# later upload than its manifest.
+# Frontend assets. Replacing an asset alongside an unchanged manifest needs no
+# daemon restart: the loader is generated per request from the registry the
+# running pveproxy holds, and the asset is read off disk when the browser asks
+# for it. Adding the *first* frontend extension to a host is a different thing
+# entirely — there is no get_index wrap yet to generate from — but that changes
+# the manifest directory above, so the registry fingerprint catches it and
+# proxmod-reapply restarts. This entry covers the remaining case: an asset
+# shipped in a later upload than the manifest that names it.
 interest-noawait /usr/share/proxmod/www
 
 # Patch specs, packaged and administrator-supplied. A host with no enabled spec

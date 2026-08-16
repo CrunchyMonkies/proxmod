@@ -3,9 +3,16 @@ use strict;
 use warnings;
 
 use lib 't/lib';
-use Test::More tests => 21;
+use lib 'perl';
+use Test::More tests => 24;
 use ProxmodTest qw(tempdir write_file repo_root);
 use File::Path ();
+
+# The same module proxmod-verify and Proxmod::Boot use to fingerprint the
+# registry. The tests compute the expected value with it rather than hard-coding
+# a digest, so a deliberate change to what the fingerprint covers does not have
+# to be re-typed here in hex.
+use Proxmod::Registry;
 
 # bin/proxmod-verify is the only thing standing between "proxmod silently does
 # nothing" and an administrator finding out. Its whole value is that it reports
@@ -48,6 +55,11 @@ sub build_tree {
             JSON::PP->new->canonical->encode(\%ext));
     }
 
+    # What proxmod-verify will compute from that registry, and so what a daemon
+    # running it would have logged. A test that wants a stale daemon overrides
+    # the journal with a different one, or with none at all.
+    my $fp = fingerprint_of($p);
+
     my @units = @{ $opt{units} || \@UNITS };
     for my $u (@units) {
         write_file("$p/usr/share/proxmod/systemd/$u.d/10-proxmod.conf", "[Service]\n");
@@ -64,7 +76,7 @@ sub build_tree {
 
         my $daemon = $u; $daemon =~ s/\.service\z//;
         my $journal = defined $opt{journal} ? $opt{journal}
-            : "proxmod: booted daemon=$daemon extensions=1 failed=0\n";
+            : "proxmod: booted daemon=$daemon extensions=1 failed=0 registry=$fp\n";
         write_file("$p/journal/$u", $journal);
     }
 
@@ -117,6 +129,15 @@ EOF
 
     chmod 0755, glob("$p/bin/*");
     return $p;
+}
+
+sub fingerprint_of {
+    my ($p) = @_;
+    my $exts = Proxmod::Registry::load(dirs => [
+        "$p/usr/share/proxmod/extensions.d",
+        "$p/etc/proxmod/extensions.d",
+    ]);
+    return Proxmod::Registry::fingerprint($exts);
 }
 
 # Returns ($rc, $stdout).
@@ -432,4 +453,79 @@ subtest 'an unknown argument is refused rather than guessed at' => sub {
     my ($rc, $out) = verify($p, '--fix-everything');
     is($rc, 64, 'exits 64');
     like($out, qr{unknown argument}, 'saying what it did not understand');
+};
+
+# --- the registry fingerprint ---------------------------------------------
+#
+# check_live answers "is proxmod running". These answer the question directly
+# after it, and the one a dpkg trigger actually needs: an extension package
+# installs cleanly, the daemons keep serving the registry they read at startup,
+# and every other check on this host reports it perfectly healthy.
+
+subtest 'a daemon running an older registry is reported and not fatal' => sub {
+    plan tests => 5;
+    my $p = build_tree(
+        manifests => [ { id => 'hello', backend => { module => 'A::Hello' } } ],
+        journal   => "proxmod: booted daemon=x extensions=1 failed=0 registry=deadbeefcafe\n",
+    );
+    my ($rc, $out) = check($p);
+
+    is($rc, 0, 'exits 0: a restart away from correct is not a failed host');
+    like($out, qr{\[ warn \].*running an older extension registry}, 'but it is a warning');
+    like($out, qr{deadbeefcafe}, 'naming what the daemon loaded');
+    like($out, qr{\Q@{[ fingerprint_of($p) ]}\E}, 'and what is on disk');
+    like($out, qr{proxmodctl reapply}, 'and what to do about it');
+};
+
+subtest 'a daemon from before fingerprinting is treated as out of date' => sub {
+    plan tests => 3;
+    # How a host upgrading onto a fingerprint-aware proxmod converges by
+    # itself: the daemons still running the old modules cannot say what they
+    # loaded, so they are assumed not to have loaded this.
+    my $p = build_tree(
+        journal => "proxmod: booted daemon=x extensions=1 failed=0\n",
+    );
+    my ($rc, $out) = check($p);
+
+    is($rc, 0, 'exits 0');
+    like($out, qr{predates registry fingerprinting}, 'and says what it cannot tell');
+    like($out, qr{A restart resolves this permanently}, 'and that it is self-correcting');
+};
+
+subtest '--registry-only is the narrow question reapply asks' => sub {
+    plan tests => 7;
+
+    my $current = build_tree(
+        manifests => [ { id => 'hello', backend => { module => 'A::Hello' } } ],
+    );
+    my ($rc, $out) = verify($current, '--registry-only');
+    is($rc, 0, 'a daemon on the current registry exits 0');
+    like($out, qr{\A\Q@{[ fingerprint_of($current) ]}\E\n\z},
+        'and the fingerprint on disk is all it prints');
+
+    my $stale = build_tree(
+        manifests => [ { id => 'hello', backend => { module => 'A::Hello' } } ],
+        journal   => "proxmod: booted daemon=x extensions=1 failed=0 registry=deadbeefcafe\n",
+    );
+    ($rc, $out) = verify($stale, '--registry-only');
+    is($rc, 1, 'a daemon on an older registry exits 1');
+    like($out, qr{\A\Q@{[ fingerprint_of($stale) ]}\E\n\z}, 'and still prints the current one');
+
+    # The kill switch means nothing is loaded, so nothing can be out of date.
+    # Without this, reapply would restart the daemons forever chasing a state
+    # the administrator asked for.
+    my $off = build_tree(disabled => 1, journal => "-- nothing --\n");
+    ($rc) = verify($off, '--registry-only');
+    is($rc, 0, 'a disabled host is never stale');
+
+    # An unreadable registry is "could not tell", which reapply must not treat
+    # as a reason to restart anything.
+    {
+        local our $PERL5LIB = "$current/nowhere";
+        ($rc) = verify($current, '--registry-only');
+        is($rc, 2, 'a registry we cannot read exits 2');
+    }
+
+    ($rc, $out) = verify($current, '--quiet', '--registry-only');
+    is($out, '', '--quiet still says nothing at all');
 };

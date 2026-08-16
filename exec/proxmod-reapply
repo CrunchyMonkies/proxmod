@@ -42,6 +42,7 @@ SRC_DIR="$prefix/usr/share/proxmod/systemd"   # what we want, package-owned
 DST_DIR="$prefix/etc/systemd/system"          # where systemd reads drop-ins
 STATE_DIR="$prefix/var/lib/proxmod"
 LOCK="$STATE_DIR/reapply.lock"
+STAMP="$STATE_DIR/registry.stamp"
 DISABLED="$prefix/etc/proxmod/disabled"
 INSTALL_MODE="$prefix/proxmox_install_mode"
 VERIFY="$prefix/usr/sbin/proxmod-verify"
@@ -203,6 +204,57 @@ remove_dropin() { # $1 = unit name
 live_looks_right() {
     [ -x "$VERIFY" ] || return 0
     "$VERIFY" --quiet --live-only >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# The second narrow question: the daemons are running proxmod, but are they
+# running the registry that is on disk *now*?
+#
+# Installing an extension package writes a manifest and fires our trigger. The
+# drop-ins do not change, nothing is patched, and the daemons are perfectly
+# healthy — so without this, reapply says "already converged" and the extension
+# an administrator just installed does nothing until someone restarts pvedaemon
+# by hand. Removing one, and upgrading proxmod itself, are the same defect.
+#
+# Kept separate from live_looks_right for the reason stated above it: each gate
+# asks one question, so that widening one cannot silently widen the other.
+#
+# Conservative in every unknown direction. proxmod-verify missing, too old to
+# know the flag, or unable to read the registry all mean "not stale", because
+# the alternative is restarting hypervisor daemons on a check we could not run.
+# ---------------------------------------------------------------------------
+registry_stale() {
+    [ -x "$VERIFY" ] || return 1
+
+    _fp=$("$VERIFY" --registry-only 2>/dev/null)
+    _rc=$?
+
+    if [ "$_rc" = 0 ]; then
+        # Up to date. Anything the loop-breaker below was suppressing has since
+        # converged, so it starts again from nothing — the stamp only ever
+        # silences a repeat of a failure that is still happening.
+        rm -f "$STAMP" 2>/dev/null || true
+        return 1
+    fi
+
+    # 2 is "could not tell"; 64 is an older proxmod-verify that has no such
+    # flag. Neither is a reason to restart a hypervisor daemon.
+    [ "$_rc" = 1 ] || return 1
+    [ -n "$_fp" ] || return 1
+
+    # Loop-breaker. If we already restarted the daemons for exactly this
+    # registry and they came back still not running it, restarting again will
+    # not help — and doing so on every trigger is the restart-storm this
+    # project exists to not repeat. Report it once per registry and stop.
+    if [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$_fp" ]; then
+        log "warn: the daemons are still not running registry $_fp after a" \
+            "restart for it; not restarting again. Check" \
+            "'journalctl -u pvedaemon -u pveproxy | grep proxmod:'."
+        return 1
+    fi
+
+    printf '%s\n' "$_fp" > "$STAMP" 2>/dev/null || true
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -387,6 +439,10 @@ main() {
         _why='a managed patch changed a file on disk'
     elif ! live_looks_right; then
         _why='the running daemons are not loading proxmod'
+    elif registry_stale; then
+        # Last, so that a daemon which is not running proxmod at all is
+        # reported with the more serious of the two messages.
+        _why='the running daemons are using an older extension registry'
     fi
 
     if [ -z "$_why" ]; then

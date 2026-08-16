@@ -83,7 +83,7 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
 {
     my $log = run_boot('pveproxy', tag => 'happy', manifests => { '50-hello.conf' => $HELLO });
 
-    like($log, qr/^proxmod: booted daemon=pveproxy extensions=2 failed=0$/m,
+    like($log, qr/^proxmod: booted daemon=pveproxy extensions=2 failed=0 registry=[0-9a-f]{12}$/m,
         'pveproxy reports both stages loaded');
     is(scalar(@frontend_calls), 1, 'the frontend is installed in pveproxy');
     is(scalar(@backend_calls), 1, 'the backend is installed in pveproxy');
@@ -94,7 +94,7 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
 {
     my $log = run_boot('pvedaemon', tag => 'daemon', manifests => { '50-hello.conf' => $HELLO });
 
-    like($log, qr/^proxmod: booted daemon=pvedaemon extensions=1 failed=0$/m,
+    like($log, qr/^proxmod: booted daemon=pvedaemon extensions=1 failed=0 registry=[0-9a-f]{12}$/m,
         'pvedaemon reports one stage loaded');
     # pvedaemon never renders a page. Wrapping the UI seam there would be pure
     # risk for no benefit.
@@ -144,7 +144,7 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
 
     like($log, qr/^proxmod: error: frontend injection failed, continuing without it: frontend exploded$/m,
         'a frontend failure is reported');
-    like($log, qr/^proxmod: booted daemon=pveproxy extensions=1 failed=1$/m,
+    like($log, qr/^proxmod: booted daemon=pveproxy extensions=1 failed=1 registry=[0-9a-f]{12}$/m,
         'the backend still loads and the failure is counted');
     is(scalar(@backend_calls), 1, 'the backend stage still ran');
 }
@@ -156,7 +156,7 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
     );
     like($log, qr/^proxmod: error: backend registration failed, continuing without it: backend exploded$/m,
         'a backend failure is reported');
-    like($log, qr/^proxmod: booted daemon=pvedaemon extensions=0 failed=1$/m,
+    like($log, qr/^proxmod: booted daemon=pvedaemon extensions=0 failed=1 registry=[0-9a-f]{12}$/m,
         'and boot still completes');
 }
 

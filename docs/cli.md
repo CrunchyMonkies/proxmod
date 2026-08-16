@@ -79,11 +79,16 @@ systemctl restart pvedaemon pveproxy
 ## 2. `proxmod-verify`
 
 ```
-usage: proxmod-verify [--json] [--quiet] [--live-only] [--no-http] [--url URL]
+usage: proxmod-verify [--json] [--quiet] [--live-only] [--registry-only]
+                      [--no-http] [--url URL]
 
   --json       machine-readable report on stdout
   --quiet      no output; the exit status is the answer
   --live-only  check only whether the running daemons have proxmod loaded
+  --registry-only
+               check only whether they loaded the registry that is on disk
+               now; prints that registry's fingerprint on stdout
+               exit: 0 up to date, 1 out of date, 2 could not tell
   --no-http    skip the checks that talk to the live web interface
   --url URL    base URL of the local pveproxy (default https://127.0.0.1:8006)
 
@@ -99,6 +104,7 @@ exit: 0 healthy, 1 a check failed, 64 bad usage
 | `drift.<unit>` | Does the **live** unit's `ExecStart` resolve to proxmod's wrapper, and does `ExecReload` restart rather than reload? |
 | `live.<unit>` | Does the **running** daemon's journal, since its current start, say proxmod booted? |
 | `extensions.<unit>` | Did every extension load in that daemon? |
+| `registry.<unit>` | Is the registry it loaded still the registry on disk? |
 | `http.index` | Does the index carry **exactly one** loader tag? |
 | `http.loader` | Is `/proxmod/loader.js` served? |
 | `http.asset<n>` | Is every asset the loader references actually served? |
@@ -134,12 +140,26 @@ That means the `ExecReload` override is not in place, and the next
 `reload-or-try-restart` [PVE-F-005] — will silently unload proxmod. Run
 `proxmodctl reapply`.
 
-### `--live-only`
+### `--live-only` and `--registry-only`
 
-The narrow question `proxmod-reapply` asks before deciding whether to restart
-anything. **It must not be widened.** A failing HTTP check is not a reason to
-bounce `pvedaemon` — a 404 on one asset would become a hypervisor API
-interruption.
+The two narrow questions `proxmod-reapply` asks before deciding whether to
+restart anything: *are they loaded*, and *did they load what is on disk now*.
+Kept as separate flags so that widening either cannot silently widen the other.
+
+**Neither must be widened.** A failing HTTP check is not a reason to bounce
+`pvedaemon` — a 404 on one asset would become a hypervisor API interruption.
+
+`--registry-only` is also the honest way to ask a whole cluster whether its
+nodes agree:
+
+```sh
+for n in $(pvecm nodes | awk 'NR>2 {print $3}'); do
+    printf '%-16s %s\n' "$n" "$(ssh "$n" proxmod-verify --registry-only)"
+done
+```
+
+Nodes with the same extensions installed print the same fingerprint. A node
+that prints a different one has a different set, or a different proxmod.
 
 ### Monitoring
 

@@ -54,8 +54,15 @@ proxmodctl list
 ```
 
 No restart needed on your part: writing into
-`/usr/share/proxmod/extensions.d/` fires proxmod's dpkg trigger and the host
-converges. Reload the browser; a **Hello** tab appears on each node.
+`/usr/share/proxmod/extensions.d/` fires proxmod's dpkg trigger, proxmod sees
+that the registry the daemons loaded is no longer the registry on disk, and
+converges — which for an extension means a restart of `pvedaemon` and
+`pveproxy`, since a running daemon reads the registry once at startup. Reload
+the browser; a **Hello** tab appears on each node.
+
+Removing one is the same in reverse: `apt remove` fires the same trigger and the
+extension stops answering. Neither needs `--force`, and neither restarts
+anything on an apt run that did not touch an extension.
 
 To check the backend half from the shell, go through the live daemon rather than
 `pvesh` — `pvesh` builds its own API tree in its own process, which was not

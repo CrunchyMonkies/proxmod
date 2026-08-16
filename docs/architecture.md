@@ -204,12 +204,22 @@ proxmodctl reapply  ─┘
 
 `proxmod-reapply` takes an `flock`, skips while `/proxmox_install_mode` exists,
 re-asserts the drop-ins, runs `daemon-reload` **only if something changed**, and
-restarts the daemons **only if something changed or `proxmod-verify --live-only`
-says they are not loaded**.
+restarts the daemons only when one of four things is true: a drop-in changed, a
+managed patch changed a file, `proxmod-verify --live-only` says the daemons are
+not loading proxmod at all, or `proxmod-verify --registry-only` says they loaded
+a registry that is no longer the one on disk.
 
-That last condition is the whole answer to the prior art's worst behaviour: an
-APT `DPkg::Post-Invoke` hook that restarted `pveproxy` on every apt invocation,
-so installing `htop` bounced the hypervisor's web interface.
+That fourth reason is what makes installing or removing an extension take
+effect. Nothing the other three watch changes when a package drops a manifest
+into `extensions.d`, so each daemon logs a fingerprint of the registry it
+loaded and `proxmod-verify` recomputes it — see
+[ADR 0011](adr/0011-registry-fingerprint.md). A restart there is behind a
+loop-breaker, so daemons that cannot load the new registry converge once and
+then say so rather than restarting on every trigger.
+
+The narrowness of those conditions is the whole answer to the prior art's worst
+behaviour: an APT `DPkg::Post-Invoke` hook that restarted `pveproxy` on every
+apt invocation, so installing `htop` bounced the hypervisor's web interface.
 
 If a daemon does not come back, `proxmod-reapply` **removes proxmod's own
 drop-ins and restarts it stock**.

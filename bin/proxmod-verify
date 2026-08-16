@@ -22,6 +22,7 @@
 #   proxmod-verify --json          # for monitoring
 #   proxmod-verify --quiet         # exit status only
 #   proxmod-verify --live-only     # only the live-load gate (what reapply asks)
+#   proxmod-verify --registry-only # is what they loaded still what is on disk?
 #
 # Exit status: 0 healthy, 1 something is wrong, 64 bad usage.
 #
@@ -70,13 +71,15 @@ my $BASE_URL   = 'https://127.0.0.1:8006';
 my $LOADER_URL = '/proxmod/loader.js';
 
 # ---------------------------------------------------------------------------
-my %opt = (json => 0, quiet => 0, live_only => 0, http => 1, url => $BASE_URL);
+my %opt = (json => 0, quiet => 0, live_only => 0, registry_only => 0,
+    http => 1, url => $BASE_URL);
 
 while (@ARGV) {
     my $a = shift @ARGV;
     if    ($a eq '--json')      { $opt{json} = 1 }
     elsif ($a eq '--quiet')     { $opt{quiet} = 1 }
     elsif ($a eq '--live-only') { $opt{live_only} = 1 }
+    elsif ($a eq '--registry-only') { $opt{registry_only} = 1 }
     elsif ($a eq '--no-http')   { $opt{http} = 0 }
     elsif ($a eq '--url')       { $opt{url} = shift @ARGV // usage(64) }
     elsif ($a eq '-h' || $a eq '--help') { usage(0) }
@@ -87,7 +90,8 @@ sub usage {
     my ($rc) = @_;
     my $fh = $rc ? \*STDERR : \*STDOUT;
     print {$fh} <<'EOF';
-usage: proxmod-verify [--json] [--quiet] [--live-only] [--no-http] [--url URL]
+usage: proxmod-verify [--json] [--quiet] [--live-only] [--registry-only]
+                      [--no-http] [--url URL]
 
   --json       machine-readable report on stdout
   --quiet      no output; the exit status is the answer
@@ -95,6 +99,12 @@ usage: proxmod-verify [--json] [--quiet] [--live-only] [--no-http] [--url URL]
                This is the narrow question proxmod-reapply asks before it
                decides to restart anything, and it must not be widened: a
                failing HTTP check is not a reason to bounce pvedaemon.
+  --registry-only
+               check only whether the running daemons loaded the extension
+               registry that is on disk now. Prints that registry's
+               fingerprint on stdout. The second narrow question reapply
+               asks, and kept separate from --live-only for the same reason.
+               exit: 0 up to date, 1 out of date, 2 could not tell
   --no-http    skip the checks that talk to the live web interface
   --url URL    base URL of the local pveproxy (default https://127.0.0.1:8006)
 
@@ -242,6 +252,12 @@ sub check_drift {
 # ---------------------------------------------------------------------------
 my $live_ok = 1;
 
+# unit => the registry= token from its booted line, or undef if the line had
+# none (a daemon that has been up since before fingerprints existed). Only
+# populated for units that are running with proxmod loaded; check_registry
+# reads it rather than walking the journal a second time.
+my %live_fingerprint;
+
 sub check_live {
     if (!have('systemctl') || !have('journalctl')) {
         $live_ok = 0;
@@ -292,6 +308,11 @@ sub check_live {
         my ($failed) = $booted =~ /failed=(\d+)/;
         $loaded = defined $loaded ? $loaded : 0;
         $failed = defined $failed ? $failed : 0;
+
+        # Absent on a daemon that started before 0.2.0. The key exists either
+        # way, so check_registry can tell "no fingerprint" from "not running".
+        my ($fp) = $booted =~ /\bregistry=([0-9a-f]+)/;
+        $live_fingerprint{$u} = $fp;
 
         ok_("live.$u", "$u has proxmod loaded",
             "$loaded extension(s) loaded, $failed failed");
@@ -356,6 +377,83 @@ sub frontend_wanted {
     my $exts = registry();
     return undef if !defined $exts;
     return scalar grep { $_->{frontend} && @{ $_->{frontend}{assets} || [] } } @$exts;
+}
+
+# ---------------------------------------------------------------------------
+# Is what the daemons loaded still what is on disk?
+#
+# check_live answers "is proxmod running". This answers the question directly
+# after it, and the one that a dpkg trigger actually needs: an extension package
+# that installs cleanly changes the registry on disk and nothing else. The
+# daemons keep serving the registry they read at startup, and every check short
+# of this one reports a perfectly healthy host.
+#
+# It is a warning, never an error. A stale daemon is a restart away from
+# correct, proxmod-reapply performs that restart moments later in the ordinary
+# case, and `proxmod-verify` going red during the seconds in between would
+# train people to ignore it.
+# ---------------------------------------------------------------------------
+
+# 0 current, 1 stale, 2 could not tell. Also the exit status of --registry-only.
+my $registry_state = 2;
+my $on_disk_fingerprint;
+
+sub check_registry {
+    return if $disabled;    # nothing is loaded, so nothing can be stale
+
+    my $exts = registry();
+    if (!defined $exts) {
+        info_('registry', 'could not read the extension registry',
+            'cannot tell whether the running daemons are up to date');
+        return;
+    }
+
+    $on_disk_fingerprint = eval { Proxmod::Registry::fingerprint($exts) };
+    if (!defined $on_disk_fingerprint) {
+        info_('registry', 'could not fingerprint the extension registry',
+            'cannot tell whether the running daemons are up to date');
+        return;
+    }
+
+    my @running = grep { exists $live_fingerprint{$_} } @units;
+    if (!@running) {
+        # Either nothing is up or nothing has proxmod in it. check_live has
+        # already said so, and said it more usefully than we could here.
+        return;
+    }
+
+    my $stale = 0;
+    for my $u (@running) {
+        my $fp = $live_fingerprint{$u};
+
+        if (!defined $fp) {
+            # Pre-0.2.0 daemon: it cannot tell us what it loaded, so it is
+            # treated as stale. That is deliberate — it is what makes the first
+            # upgrade onto a fingerprint-aware proxmod converge by itself.
+            $stale = 1;
+            warn_("registry.$u", "$u predates registry fingerprinting",
+                'its booted line carries no registry= field, so what it loaded'
+                    . ' cannot be compared with what is on disk; treating it as'
+                    . ' out of date. A restart resolves this permanently.');
+            next;
+        }
+
+        if ($fp eq $on_disk_fingerprint) {
+            ok_("registry.$u", "$u is running the current extension registry",
+                "registry=$on_disk_fingerprint");
+            next;
+        }
+
+        $stale = 1;
+        warn_("registry.$u", "$u is running an older extension registry",
+            "it loaded registry=$fp; the registry on disk is"
+                . " $on_disk_fingerprint. Extensions installed, removed or"
+                . " reconfigured since it started are not live in it."
+                . " 'proxmodctl reapply' restarts the wrapped daemons.");
+    }
+
+    $registry_state = $stale ? 1 : 0;
+    return;
 }
 
 sub check_http {
@@ -497,12 +595,28 @@ sub trim {
 if ($opt{live_only}) {
     check_live();
 }
+elsif ($opt{registry_only}) {
+    check_live();       # populates %live_fingerprint
+    check_registry();
+}
 else {
     check_installed();
     check_drift();
     check_live();
+    check_registry();
     check_http();
     check_structure();
+}
+
+# --registry-only is a machine interface for proxmod-reapply, so it answers on
+# stdout and in the exit status rather than in the report: the fingerprint the
+# registry on disk currently has, and whether the running daemons match it.
+# --json still wins, for the same reason it wins everywhere else — it is what
+# monitoring reads, and it should never have to know which gate was asked for.
+if ($opt{registry_only} && !$opt{json}) {
+    print "$on_disk_fingerprint\n"
+        if defined $on_disk_fingerprint && !$opt{quiet};
+    exit($disabled ? 0 : $registry_state);
 }
 
 my $failed = grep { $_->{level} eq 'error' } @findings;
@@ -513,6 +627,7 @@ my $rc = $failed ? 1 : 0;
 # proxmod-reapply turns the answer into a daemon restart. A failing HTTP check
 # or a drifted ExecReload is a real problem and not one a restart fixes.
 $rc = $live_ok ? 0 : 1 if $opt{live_only};
+$rc = ($disabled ? 0 : $registry_state) if $opt{registry_only};
 
 if ($opt{quiet}) {
     exit $rc;
@@ -524,6 +639,7 @@ if ($opt{json}) {
         version  => $VERSION,
         healthy  => ($rc == 0 ? JSON::PP::true() : JSON::PP::false()),
         disabled => ($disabled ? JSON::PP::true() : JSON::PP::false()),
+        registry => $on_disk_fingerprint,
         errors   => $failed,
         warnings => $warned,
         units    => [@units],

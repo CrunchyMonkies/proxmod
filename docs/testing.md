@@ -125,8 +125,8 @@ test/qemu/vm.sh stop
 
 They run in order and share state through `/var/tmp/proxmod-e2e`. The
 numbering is the schedule, not decoration: `00` records the baseline that `02`
-and `11` compare against, `01` installs what `11` purges, `04` installs the
-extension that `05`–`10` assume is there. A failure in `00` or `01` aborts the
+and `12` compare against, `01` installs what `12` purges, `04` installs the
+extension that `05`–`11` assume is there. A failure in `00` or `01` aborts the
 run; everything after that continues, because one run reporting six real
 failures is worth more than six runs each reporting the first.
 
@@ -143,7 +143,8 @@ failures is worth more than six runs each reporting the first.
 | `08-upgrade` | A real `pve-manager` upgrade, using the repository embedded in the installer ISO so it is offline and reproducible. Nothing is reapplied by hand and nothing needs to be. |
 | `09-noop-apt` | An apt run that has nothing to do with proxmod does **not** restart the daemons. The regression test for the prior art's APT hook. |
 | `10-permissions` | A group-writable module means unauthenticated root inside `pvedaemon`, so the wrapper refuses to inject — the daemon still starts, proxmod does not load, and `proxmod-verify` fails loudly. |
-| `11-purge` | The host is indistinguishable from one proxmod was never on: drop-ins gone, `dpkg -V` clean, no orphaned backups, and the planted foreign file untouched. |
+| `11-registry` | Removing an extension takes it out of the *running* daemons, and installing one puts it back — with no `--force` anywhere, because the fingerprint in each daemon's booted line no longer matches the registry on disk. The regression test for a defect that is invisible to `prove` and to every other check here: the host stays healthy, the daemons stay up, and the extension an administrator just removed keeps answering. |
+| `12-purge` | The host is indistinguishable from one proxmod was never on: drop-ins gone, `dpkg -V` clean, no orphaned backups, and the planted foreign file untouched. |
 
 ---
 

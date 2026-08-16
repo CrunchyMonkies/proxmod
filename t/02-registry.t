@@ -11,7 +11,7 @@ use ProxmodTest qw(tempdir write_file capture_log is_tainted);
 
 use Proxmod::Registry;
 
-plan tests => 50;
+plan tests => 64;
 
 # Two directories, mirroring the real layout: the package-owned drop-in
 # directory and the administrator's override directory on top of it.
@@ -310,3 +310,85 @@ manifest($pkg, '50-daemons.conf',
     is_deeply($exts, [], 'a missing extension directory yields nothing');
     unlike($log, qr/warn/, 'and is not warned about');
 }
+
+# --- the registry fingerprint ---------------------------------------------
+#
+# Proxmod::Boot logs this at daemon startup and proxmod-verify recomputes it
+# from disk, so that "an extension was installed but nothing restarted" becomes
+# visible. Everything below is about what must and must not move it.
+
+sub fp {
+    my ($exts) = load_from($pkg, $admin);
+    return Proxmod::Registry::fingerprint($exts);
+}
+
+clear();
+manifest($pkg, '50-hello.conf',
+    '{"id":"hello","version":"1.0","backend":{"module":"A::Hello"},"frontend":{"assets":["hello.js"]}}');
+
+my $base = fp();
+like($base, qr/\A[0-9a-f]{12}\z/, 'a fingerprint is twelve hex digits');
+is(fp(), $base, 'and is the same for the same registry read twice');
+
+# Every field below changes what a daemon would actually load, so every one of
+# them has to change the fingerprint. A field that did not would be an
+# extension change that silently never goes live.
+my %moves = (
+    'a new extension' =>
+        sub { manifest($pkg, '60-other.conf', '{"id":"other","backend":{"module":"A::Other"}}') },
+    'a changed version' =>
+        sub { manifest($pkg, '50-hello.conf',
+            '{"id":"hello","version":"1.1","backend":{"module":"A::Hello"},"frontend":{"assets":["hello.js"]}}') },
+    'a changed order' =>
+        sub { manifest($pkg, '50-hello.conf',
+            '{"id":"hello","version":"1.0","order":10,"backend":{"module":"A::Hello"},"frontend":{"assets":["hello.js"]}}') },
+    'a changed backend module' =>
+        sub { manifest($pkg, '50-hello.conf',
+            '{"id":"hello","version":"1.0","backend":{"module":"A::Elsewhere"},"frontend":{"assets":["hello.js"]}}') },
+    'a narrowed daemon list' =>
+        sub { manifest($pkg, '50-hello.conf',
+            '{"id":"hello","version":"1.0","backend":{"module":"A::Hello","daemons":["pvedaemon"]},"frontend":{"assets":["hello.js"]}}') },
+    'a changed frontend asset' =>
+        sub { manifest($pkg, '50-hello.conf',
+            '{"id":"hello","version":"1.0","backend":{"module":"A::Hello"},"frontend":{"assets":["goodbye.js"]}}') },
+    'a removed extension' =>
+        sub { clear() },
+);
+
+for my $what (sort keys %moves) {
+    clear();
+    manifest($pkg, '50-hello.conf',
+        '{"id":"hello","version":"1.0","backend":{"module":"A::Hello"},"frontend":{"assets":["hello.js"]}}');
+    $moves{$what}->();
+    isnt(fp(), $base, "$what changes the fingerprint");
+}
+
+# The other half of the contract. A manifest that contributes nothing to what
+# runs must not move the fingerprint, or every disabled extension on the host
+# would cost a daemon restart it does not need.
+clear();
+manifest($pkg, '50-hello.conf',
+    '{"id":"hello","version":"1.0","backend":{"module":"A::Hello"},"frontend":{"assets":["hello.js"]}}');
+manifest($pkg, '70-off.conf', '{"id":"off","enabled":false,"backend":{"module":"A::Off"}}');
+is(fp(), $base, 'a disabled extension does not change the fingerprint');
+
+manifest($admin, '70-off.conf', '');
+is(fp(), $base, 'and neither does masking one');
+
+# Two daemons ask the same question and must get the same answer. pveproxy runs
+# the frontend stage and pvedaemon does not, so anything derived from what each
+# daemon loaded — a count, for instance — would differ between them for one
+# registry. This is why the fingerprint is a function of the list alone.
+clear();
+manifest($pkg, '50-hello.conf',
+    '{"id":"hello","version":"1.0","backend":{"module":"A::Hello"},"frontend":{"assets":["hello.js"]}}');
+{
+    my ($a) = load_from($pkg, $admin);
+    my ($b) = load_from($pkg, $admin);
+    is(Proxmod::Registry::fingerprint($a), Proxmod::Registry::fingerprint($b),
+        'two independent loads of one registry agree');
+}
+
+is(Proxmod::Registry::fingerprint([]), Proxmod::Registry::fingerprint(undef),
+    'an empty registry and no registry are the same thing');
+isnt(Proxmod::Registry::fingerprint([]), $base, 'and are not the same as a populated one');
