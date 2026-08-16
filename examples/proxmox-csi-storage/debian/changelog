@@ -1,5 +1,0 @@
-proxmox-csi-storage (0.1.0) unstable; urgency=medium
-
-  * Initial release: copy and reassign endpoints for proxmox-csi-plugin.
-
- -- proxmod maintainers <proxmod@localhost>  Wed, 12 Aug 2026 00:00:00 +0000
