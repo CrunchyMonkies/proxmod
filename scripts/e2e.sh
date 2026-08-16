@@ -89,7 +89,7 @@ else
     started_vm=1
 fi
 
-# shellcheck disable=SC2317 # reached through the trap below, not by falling into
+# shellcheck disable=SC2317,SC2329 # reached through the trap below, not by falling into
 cleanup() {
     local rc=$?
     if [ "$started_vm" = "1" ] && [ "$KEEP_VM" != "1" ]; then
