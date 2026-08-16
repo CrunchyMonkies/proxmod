@@ -204,7 +204,13 @@ Proxmod.ui.addQemuTab(spec)         // PVE.qemu.Config
 Proxmod.ui.addLxcTab(spec)          // PVE.lxc.Config
 Proxmod.ui.addGuestTab(spec)        // both guest types — see below
 Proxmod.ui.addDatacenterTab(spec)   // PVE.dc.Config
-Proxmod.ui.addTab(target, spec)     // 'node' | 'qemu' | 'lxc' | 'datacenter'
+Proxmod.ui.addTab(target, spec)     // any key of Proxmod.ui.targets
+
+Proxmod.ui.addMenuScreen(spec)      // a node in the config panel's left-hand tree
+Proxmod.ui.addMenuSection(spec)     // a section in that node's own card
+Proxmod.ui.addMenuItem(spec)        // either, via spec.mode
+Proxmod.ui.configureMenu(spec)      // title/icon/layout of the parent node
+
 Proxmod.ui.addStyle(ext, css)
 Proxmod.ui.targets                  // the target → class map
 Proxmod.ui.registrations()          // what has been registered, for debugging
@@ -234,6 +240,58 @@ from inside `initComponent` [PVE-F-032] — which would blank the panel.
 `addStyle` writes into a `<style>` element keyed by your extension id, so
 calling it twice replaces rather than accumulates. Prefix every class with
 `proxmod-<yourext>-`.
+
+#### A tab, or a menu item?
+
+Both put a card into the same panel. They differ in where you click to get it:
+
+- a **tab** joins the row across the top — Summary, Notes, Shell, and yours;
+- a **menu item** joins the tree down the left, at the bottom, under a shared
+  `Proxmod` node.
+
+Add a **tab** when your card is one more view of the object that is already
+selected: another statistic about this VM, another list belonging to this node.
+It sits among Proxmox's own views because it is one of them.
+
+Add a **menu item** when your extension owns a *place* rather than a view — when
+it has several related screens, or one that is not really about this object's
+configuration. Grouping them under one node keeps eight extensions from turning
+the tab bar into a scrolling strip.
+
+A menu item is either a **screen** (its own node, its own card) or a **section**
+(rendered in the parent node's card, alongside every other extension's). Sections
+are for a paragraph or a small form; screens are for pages.
+
+```js
+// Two screens and a section, from one extension.
+Proxmod.ui.addMenuScreen({
+    ext: 'acme-foo', targets: ['node', 'storage'],
+    id: 'volumes', title: gettext('Volumes'),
+    iconCls: 'fa fa-database', xtype: 'acmeFooVolumes',
+});
+Proxmod.ui.addMenuScreen({
+    ext: 'acme-foo', target: 'node',
+    id: 'jobs', title: gettext('Jobs'), xtype: 'acmeFooJobs',
+});
+Proxmod.ui.addMenuSection({
+    ext: 'acme-foo', target: 'guest',
+    id: 'status', title: gettext('Acme'), xtype: 'acmeFooStatus',
+});
+```
+
+Targets go well beyond the four tab hosts: `datacenter`, `node`, `qemu`, `lxc`,
+`storage`, `pool`, `zone`, `network`, plus the sets `guest` (both guest types)
+and `all`. Your card is handed the context under the names PVE's own panels use
+— `nodename`, `vmid`, `storage`, `pool`, `zone`, `zoneType` [PVE-F-034] — so
+read `this.storage`, never the URL. Fields that do not apply are absent; a pool
+has no node.
+
+`standalone: true` gives your extension its own top-level node instead of the
+shared one. With a single screen and no sections it *is* that node, unwrapped.
+Prefer the shared parent: one `Proxmod` entry is tidier than five, and it is
+what an administrator will look under.
+
+See [`js-api.md`](js-api.md) §3 for the full spec and `configureMenu`.
 
 ---
 
@@ -280,10 +338,14 @@ another's. If you define your own, you are adding a link to that chain.
 
 | Class | What |
 |---|---|
-| `PVE.node.Config` | The per-node tab panel |
-| `PVE.qemu.Config` | The per-VM tab panel |
-| `PVE.lxc.Config` | The per-container tab panel |
-| `PVE.dc.Config` | The datacenter tab panel |
+| `PVE.dc.Config` | The datacenter panel |
+| `PVE.node.Config` | The per-node panel |
+| `PVE.qemu.Config` | The per-VM panel |
+| `PVE.lxc.Config` | The per-container panel |
+| `PVE.storage.Browser` | The per-storage panel — **not** `PVE.storage.Config`, which does not exist |
+| `PVE.pool.Config` | The per-pool panel |
+| `PVE.sdn.Browser` | The per-zone panel |
+| `PVE.network.Browser` | The per-node network panel |
 
 These are class names in someone else's application. A Proxmox release may
 rename one. proxmod probes for the class before defining an override, so an
@@ -488,5 +550,3 @@ success: function (response) {
 - [`specifications.md`](specifications.md) §7 — the normative requirements (`REQ-FE-*`)
 - [`pve-internals.md`](pve-internals.md) §10 — how the interface is built and served
 - [`backend-extensions.md`](backend-extensions.md) — the other half
-</content>
-</invoke>

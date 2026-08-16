@@ -142,12 +142,28 @@ Proxmod.api['delete']('acme-foo', 'items/3', { node: n });
 
 ```js
 Proxmod.ui.targets
-// { node: 'PVE.node.Config', qemu: 'PVE.qemu.Config',
-//   lxc: 'PVE.lxc.Config', datacenter: 'PVE.dc.Config' }
+// { datacenter: 'PVE.dc.Config',      storage: 'PVE.storage.Browser',
+//   node:       'PVE.node.Config',    pool:    'PVE.pool.Config',
+//   qemu:       'PVE.qemu.Config',    zone:    'PVE.sdn.Browser',
+//   lxc:        'PVE.lxc.Config',     network: 'PVE.network.Browser' }
 ```
 
 Every one of these is a `PVE.panel.Config` subclass, which is the only reason
-the `insertNodes` mechanism works at all [PVE-F-030].
+the `insertNodes` mechanism works at all [PVE-F-030]. They are the resource
+tree's own type-to-panel map minus `tag`, which has no per-object panel
+[PVE-F-034].
+
+Anywhere a target is accepted you may also pass a **set**:
+
+| Set | Expands to |
+|---|---|
+| `guest` | `qemu`, `lxc` |
+| `all` | every target above |
+
+Each card is handed the context of the thing it is showing, under the names PVE
+itself uses [PVE-F-034]: `nodename`, `vmid`, `storage`, `pool`, `zone`,
+`zoneType`, plus `pveSelNode`. Fields that do not apply are simply absent — a
+pool has no `nodename`. Write the card to read `this.storage`, never the URL.
 
 ### `Proxmod.ui.addTab(target, spec)` → boolean
 
@@ -198,12 +214,99 @@ what it is given — it `shift()`s `groups` empty and sets `header` — so a sha
 object works once and then silently misplaces the tab on every panel after the
 first.
 
-Your component is handed `pveSelNode`, and `nodename` when the panel has one.
-
 **`after` is best-effort.** `insertNodes` always appends, so proxmod moves the
 tab afterwards by walking the panel's tree store. If anything is not as
 expected, the tab stays where it landed. A tab in the wrong place is a cosmetic
 problem and is not worth an exception during `initComponent`.
+
+### Menu items
+
+A **tab** goes in the config panel's tab bar. A **menu item** goes in its
+left-hand tree — the vertical Summary / Notes / Shell / System nav — at the
+bottom, under a shared `Proxmod` node. Both are `insertNodes` calls on the same
+panel; the difference is only where they land and what activates them.
+
+Reach for a menu item when the extension owns a *place* in the interface rather
+than one more view of the object you already selected — several related screens,
+or a page that is not really about this VM's configuration.
+
+There are two kinds, and an extension can register both:
+
+| Kind | Where it appears | What it is |
+|---|---|---|
+| **screen** | a node of its own, nested under the Proxmod node | its own card, activated by selecting it |
+| **section** | inside the Proxmod node's own card | a fragment rendered when you select the parent |
+
+```js
+Proxmod.ui.addMenuItem(spec)        // spec.mode: 'screen' (default) or 'section'
+Proxmod.ui.addMenuScreen(spec)      // mode forced to 'screen'
+Proxmod.ui.addMenuSection(spec)     // mode forced to 'section'
+```
+
+Returns `false` and logs on a missing `ext`, a missing `xtype`, no valid target,
+or a target class this Proxmox does not have. An unknown name among several
+targets costs that one target, not the registration.
+
+#### The spec
+
+Everything from the tab spec above applies, minus `groups` — the parent decides
+nesting — plus:
+
+| Field | | |
+|---|---|---|
+| `targets` | **required** | Array of target keys or set names; or `target` for one |
+| `mode` | | `'screen'` (default) or `'section'` |
+| `standalone` | | `true` gives this extension its own top-level node instead of joining the shared Proxmod one |
+| `weight` | | Ordering among proxmod's own items; default `50`, ties broken by registration order |
+
+```js
+Proxmod.ui.addMenuScreen({
+    ext: 'acme-foo', targets: ['node', 'storage'],
+    id: 'volumes', title: gettext('Volumes'),
+    iconCls: 'fa fa-database', xtype: 'acmeFooVolumes',
+});
+
+Proxmod.ui.addMenuSection({
+    ext: 'acme-foo', target: 'guest',
+    id: 'status', title: gettext('Acme'), xtype: 'acmeFooStatus',
+});
+```
+
+**`standalone` with exactly one screen and no sections is promoted**: the screen
+becomes the top-level node itself, because a parent wrapping a single child is
+noise. Register a second item and the parent appears.
+
+#### `Proxmod.ui.configureMenu(spec)` → boolean
+
+Customises a parent node. With no `ext` it configures the shared Proxmod node;
+with one, that extension's `standalone` node. Defaults to every target, because
+a parent that looks different depending on what you clicked is a bug.
+
+| Field | Default | |
+|---|---|---|
+| `targets` / `target` | `'all'` | Which panels this applies to |
+| `ext` | — | Configure this extension's standalone parent instead of the shared one |
+| `title` | `'Proxmod'` | |
+| `iconCls` | `'fa fa-puzzle-piece'` | |
+| `layout` | `'stacked'` | `'stacked'` = titled boxes down one scrolling column, like the Summary page; `'tabs'` = one tab per section |
+| `expandedOnInit` | `true` | Whether the tree node starts open |
+
+Fields you leave out are not reset, so two extensions can each set the part they
+care about. Whoever calls last wins on a field they both set — a shared parent
+is shared, and there is no arbitration.
+
+With no sections registered, the parent's card renders a short placeholder
+naming the child screens. `activateCard` shows whatever the card holds, so an
+empty one is a blank pane rather than an error, and a blank pane is worse than a
+sentence.
+
+#### Ordering, and why the parent goes first
+
+`insertNodes` **descends into** groups and never creates one [PVE-F-033]. A
+group is just an earlier item whose `itemId` matches. So proxmod inserts each
+parent before its children, and if a parent cannot be inserted it skips that
+parent's children entirely — inserting them anyway would append them at the top
+level, silently, scattering an extension's screens through the menu.
 
 ### `Proxmod.ui.addStyle(ext, css)`
 
@@ -221,8 +324,14 @@ page and it is shared with Proxmox.
 ### `Proxmod.ui.registrations()` → array
 
 ```js
-[{ target: 'node', ext: 'acme-foo', itemId: 'proxmod-acme-foo' }, …]
+[{ target: 'node', kind: 'tab',          ext: 'acme-foo', itemId: 'proxmod-acme-foo' },
+ { target: 'node', kind: 'menu-screen',  ext: 'acme-foo', itemId: 'proxmod-acme-foo-volumes',
+   parent: 'proxmod' },
+ …]
 ```
+
+`kind` is `tab`, `menu-screen` or `menu-section`; `parent` is present on menu
+items only.
 
 For `proxmod-verify` and the browser console. Nothing else should use it.
 
@@ -231,15 +340,20 @@ For `proxmod-verify` and the browser console. Nothing else should use it.
 ## 4. The one override per class
 
 proxmod installs **exactly one** `Ext.define({override: …})` per target class,
-on first registration, no matter how many extensions add tabs. A chain of N
-overrides is N chances for one extension's `callParent` to swallow another's.
+on first registration, no matter how many extensions add tabs or menu items. A
+chain of N overrides is N chances for one extension's `callParent` to swallow
+another's.
 
 Inside it:
 
 ```js
 initComponent: function () {
     me.callParent(arguments);          // FIRST
-    Proxmod.guard('adding tabs to ' + target, function () { applyTabs(key, me); });
+    Proxmod.guard('adding proxmod items to ' + target, function () {
+        var ctx = contextFor(me);      // nodename, vmid, storage, … [PVE-F-034]
+        applyTabs(key, me, ctx);
+        applyMenu(key, me, ctx);
+    });
 }
 ```
 
@@ -266,7 +380,8 @@ way.
 | Throw in your `initComponent` | That tab's panel fails; the rest of the interface survives |
 | Throw in an unguarded listener | Uncaught — wrap it in `Proxmod.guard` |
 | Register a colliding `itemId` | Warned and skipped |
-| Register for a class this PVE lacks | Warned, `addTab` returns `false` |
+| Collide with a menu **parent's** `itemId` | Warned; that parent's children are skipped too, rather than orphaned at the top level [PVE-F-033] |
+| Register for a class this PVE lacks | Warned, `addTab`/`addMenuItem` returns `false` |
 | Assign to `Proxmox` | You have broken the web interface for everyone |
 | Create a second global | You are squatting on a name you do not own |
 | Render an unencoded API value | Stored XSS in the hypervisor's admin interface |
@@ -308,5 +423,3 @@ proxmod can be disabled by an administrator without your package being removed.
 - [`specifications.md`](specifications.md) §7 — normative requirements (`REQ-FE-*`)
 - [`pve-internals.md`](pve-internals.md) §10 — how the interface is built and served
 - [`extension-manifest.md`](extension-manifest.md) — how your asset gets loaded
-</content>
-</invoke>

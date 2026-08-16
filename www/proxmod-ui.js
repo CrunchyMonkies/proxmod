@@ -146,25 +146,91 @@ var Proxmod = Proxmod || {};
 
     // ------------------------------------------------------------------ ui
 
-    // The classes an extension may hang a tab on, and what each one is called
-    // in a request. Every one of these is a PVE.panel.Config subclass, which is
-    // the only reason the insertNodes() trick below works [PVE-F-030].
+    // The classes an extension may hang a tab or a menu item on, and what each
+    // one is called in a request. Every one of these is a PVE.panel.Config
+    // subclass, which is the only reason the insertNodes() trick below works
+    // [PVE-F-030]. The list mirrors the resource tree's own type-to-class map
+    // [PVE-F-034] minus 'tag', which has no per-object configuration panel.
     var TARGETS = {
+        datacenter: 'PVE.dc.Config',
         node: 'PVE.node.Config',
         qemu: 'PVE.qemu.Config',
         lxc: 'PVE.lxc.Config',
-        datacenter: 'PVE.dc.Config',
+        storage: 'PVE.storage.Browser',
+        pool: 'PVE.pool.Config',
+        zone: 'PVE.sdn.Browser',
+        network: 'PVE.network.Browser',
     };
 
-    // One entry per target: the tabs registered for it, and whether the
-    // override has been installed. There is exactly ONE override per class no
-    // matter how many extensions register — a chain of N overrides is N chances
-    // for one extension's callParent to swallow another's.
+    // Names for sets of targets. 'guest' is here because "add this to every VM"
+    // is what people mean and forgetting the container half is what they
+    // actually ship.
+    var TARGET_SETS = {
+        guest: ['qemu', 'lxc'],
+        all: Object.keys(TARGETS),
+    };
+
+    // What a card needs to know about the object it is showing. PVE keeps these
+    // on the selected resource-tree node and copies them onto each child item by
+    // hand; the names on the right are the ones its own panels use, so an
+    // extension card can be written exactly like a stock one [PVE-F-034]. Note
+    // the rename: the tree calls a zone 'sdn' and every panel calls it 'zone'.
+    var CONTEXT = {
+        node: 'nodename',
+        vmid: 'vmid',
+        storage: 'storage',
+        pool: 'pool',
+        sdn: 'zone',
+        'zone-type': 'zoneType',
+    };
+
+    // One entry per target: the tabs and menu items registered for it, the
+    // per-root menu configuration, and whether the override has been installed.
+    // There is exactly ONE override per class no matter how many extensions
+    // register — a chain of N overrides is N chances for one extension's
+    // callParent to swallow another's.
     var registry = {};
 
     Object.keys(TARGETS).forEach(function (key) {
-        registry[key] = { tabs: [], installed: false };
+        registry[key] = { tabs: [], menu: [], menuConfig: {}, installed: false };
     });
+
+    function contextFor(panel) {
+        var data = (panel.pveSelNode && panel.pveSelNode.data) || {};
+        var ctx = {};
+        Object.keys(CONTEXT).forEach(function (from) {
+            var v = data[from];
+            if (v !== undefined && v !== null && v !== '') {
+                ctx[CONTEXT[from]] = v;
+            }
+        });
+        return ctx;
+    }
+
+    // Resolve a spec's target list. Returns [] rather than throwing on an
+    // unknown name: one typo should cost one target, not the registration.
+    function resolveTargets(spec, fallback) {
+        var raw = spec.targets || spec.target || fallback;
+        if (!raw) {
+            return [];
+        }
+        var out = [];
+        var bad = [];
+        (Ext.isArray(raw) ? raw : [raw]).forEach(function (name) {
+            (TARGET_SETS[name] || [name]).forEach(function (key) {
+                if (!registry[key]) {
+                    if (bad.indexOf(key) < 0) { bad.push(key); }
+                } else if (out.indexOf(key) < 0) {
+                    out.push(key);
+                }
+            });
+        });
+        if (bad.length) {
+            Proxmod.log.error('unknown target(s): ' + bad.join(', ')
+                + '; known targets are ' + Object.keys(TARGETS).join(', '));
+        }
+        return out;
+    }
 
     // insertNodes throws 'itemId already exists' on a duplicate [PVE-F-032],
     // and it throws it from inside initComponent — which would blank the panel.
@@ -181,7 +247,7 @@ var Proxmod = Proxmod || {};
     // instance, deliberately: insertNodes mutates what it is given — it shifts
     // `groups` empty and sets `header` — so a shared object works once and then
     // silently misplaces the tab on every panel after the first.
-    function buildItem(spec, panel, nodename) {
+    function buildItem(spec, panel, ctx) {
         var item = Ext.apply({}, spec.item);
 
         item.itemId = itemIdFor(spec);
@@ -193,12 +259,30 @@ var Proxmod = Proxmod || {};
             item.groups = spec.groups.slice();
         }
 
+        // What the card is being shown for. An extension card can then be
+        // written exactly like a stock PVE one — read this.nodename, this.vmid,
+        // this.storage — rather than digging through pveSelNode itself.
         item.pveSelNode = panel.pveSelNode;
-        if (nodename && item.nodename === undefined) {
-            item.nodename = nodename;
-        }
+        Object.keys(ctx || {}).forEach(function (name) {
+            if (item[name] === undefined) {
+                item[name] = ctx[name];
+            }
+        });
 
         return item;
+    }
+
+    // Cheaper and quieter than letting insertNodes throw. A collision is a
+    // packaging bug in one extension; it must not stop what was registered
+    // after it, and it must not blank the panel it happens on.
+    function insertNode(key, panel, item) {
+        if (panel.savedItems && panel.savedItems[item.itemId] !== undefined) {
+            Proxmod.log.warn('itemId "' + item.itemId + '" already exists on '
+                + TARGETS[key] + ', skipping it');
+            return false;
+        }
+        panel.insertNodes([item]);
+        return true;
     }
 
     // Best-effort ordering. insertNodes always appends, so a tab asking to sit
@@ -219,32 +303,228 @@ var Proxmod = Proxmod || {};
         anchor.parentNode.insertBefore(ours, anchor.nextSibling);
     }
 
-    function applyTabs(key, panel) {
-        var entry = registry[key];
-        var nodename = panel.pveSelNode && panel.pveSelNode.data
-            ? panel.pveSelNode.data.node
-            : undefined;
-
-        entry.tabs.forEach(function (spec) {
+    function applyTabs(key, panel, ctx) {
+        registry[key].tabs.forEach(function (spec) {
             guard('tab ' + spec.ext + '/' + itemIdFor(spec), function () {
-                var item = buildItem(spec, panel, nodename);
-
-                // Cheaper and quieter than letting insertNodes throw. A
-                // collision is a packaging bug in one extension; it must not
-                // stop the tabs registered after it.
-                if (panel.savedItems && panel.savedItems[item.itemId] !== undefined) {
-                    Proxmod.log.warn('tab itemId "' + item.itemId
-                        + '" already exists on ' + TARGETS[key] + ', skipping it');
+                var item = buildItem(spec, panel, ctx);
+                if (!insertNode(key, panel, item)) {
                     return;
                 }
-
-                panel.insertNodes([item]);
-
                 if (spec.after) {
                     guard('placing tab ' + item.itemId, function () {
                         placeAfter(panel, item.itemId, spec.after);
                     });
                 }
+            });
+        });
+    }
+
+    // ------------------------------------------------------------ menu items
+
+    // The config panel's left-hand menu is that same treelist, and two of its
+    // properties decide the whole design below [PVE-F-033]:
+    //
+    //   * insertNodes always appendChild()s, so anything added after callParent
+    //     lands at the BOTTOM of the menu — which is where these belong;
+    //   * `groups` are DESCENDED INTO, never created. A group is nothing more
+    //     than an earlier item whose itemId matches, and it keeps a card of its
+    //     own in savedItems.
+    //
+    // So "a parent with its own screen and children underneath" is the native
+    // shape here rather than a workaround — PVE builds its own Services group
+    // on the node panel exactly this way. The rule that follows is a
+    // correctness requirement, not a preference: the parent must be inserted
+    // BEFORE any child naming it, or insertNodes quietly drops the child at the
+    // top level and the extension's screens scatter through the menu.
+    var MENU_ROOT = 'proxmod';
+    var MENU_ROOT_XTYPE = 'proxmodMenuRoot';
+
+    // Registration order, used only to break weight ties. A menu whose contents
+    // shuffle between page loads is its own bug report.
+    var menuSeq = 0;
+    var menuRootDefined = false;
+
+    // The parent item's card. It is a plain panel either way: 'tabs' puts one
+    // tabpanel inside it rather than extending Ext.tab.Panel, so there is one
+    // class to reason about and the layout stays a runtime choice.
+    function defineMenuRoot() {
+        if (menuRootDefined) {
+            return;
+        }
+        menuRootDefined = true;
+
+        Ext.define('Proxmod.panel.MenuRoot', {
+            extend: 'Ext.panel.Panel',
+            alias: 'widget.' + MENU_ROOT_XTYPE,
+
+            border: 0,
+            scrollable: true,
+
+            // Set by installRoot. None of this is a PVE contract.
+            proxmodSections: null,
+            proxmodScreens: null,
+            proxmodLayout: 'stacked',
+            proxmodContext: null,
+
+            initComponent: function () {
+                var me = this;
+                var items = [];
+
+                (me.proxmodSections || []).forEach(function (spec) {
+                    var card = guard('menu section ' + spec.ext + '/' + itemIdFor(spec),
+                        function () { return me.proxmodSection(spec); });
+                    if (card) {
+                        items.push(card);
+                    }
+                });
+
+                if (!items.length) {
+                    // activateCard add()s whatever savedItems holds, so a card
+                    // with nothing in it is a blank pane rather than an error —
+                    // and a blank pane is worse than a sentence.
+                    items = [me.proxmodPlaceholder()];
+                    me.layout = 'fit';
+                } else if (me.proxmodLayout === 'tabs') {
+                    items = [{ xtype: 'tabpanel', border: 0, items: items }];
+                    me.layout = 'fit';
+                    me.scrollable = false;
+                } else {
+                    me.layout = 'anchor';
+                    me.defaults = Ext.apply({ anchor: '100%' }, me.defaults);
+                }
+
+                me.items = items;
+                me.callParent();
+            },
+
+            proxmodSection: function (spec) {
+                var me = this;
+                var card = Ext.apply({}, spec.item);
+
+                card.itemId = itemIdFor(spec);
+                card.title = spec.title || card.title || spec.ext;
+                if (spec.iconCls || card.iconCls) {
+                    card.iconCls = spec.iconCls || card.iconCls;
+                }
+
+                card.pveSelNode = me.pveSelNode;
+                Object.keys(me.proxmodContext || {}).forEach(function (name) {
+                    if (card[name] === undefined) {
+                        card[name] = me.proxmodContext[name];
+                    }
+                });
+
+                // Stacked sections are titled boxes down one scrolling column,
+                // the same visual language as the Summary page; tabs are pages
+                // and the tabpanel already frames them.
+                if (me.proxmodLayout !== 'tabs' && card.margin === undefined) {
+                    card.margin = '0 0 10 0';
+                }
+
+                return card;
+            },
+
+            proxmodPlaceholder: function () {
+                var names = (this.proxmodScreens || []).map(function (spec) {
+                    return Ext.String.htmlEncode(spec.title || spec.ext);
+                });
+                var text = names.length
+                    ? gettext('Select an item below.') + ' (' + names.join(', ') + ')'
+                    : gettext('No extension has registered anything here.');
+                return {
+                    xtype: 'panel',
+                    border: 0,
+                    bodyPadding: 20,
+                    html: '<p>' + text + '</p>',
+                };
+            },
+        });
+    }
+
+    // One root per parent node: the shared 'proxmod' item, plus one per
+    // extension that asked to stand alone.
+    function rootsFor(key) {
+        var roots = [];
+        var byId = {};
+
+        registry[key].menu.slice().sort(function (a, b) {
+            return (a.weight - b.weight) || (a.seq - b.seq);
+        }).forEach(function (spec) {
+            var id = spec.standalone ? 'proxmod-' + spec.ext : MENU_ROOT;
+            if (!byId[id]) {
+                byId[id] = {
+                    id: id,
+                    ext: spec.ext,
+                    standalone: spec.standalone,
+                    sections: [],
+                    screens: [],
+                };
+                roots.push(byId[id]);
+            }
+            byId[id][spec.mode === 'section' ? 'sections' : 'screens'].push(spec);
+        });
+
+        return roots;
+    }
+
+    function installRoot(key, panel, root, ctx) {
+        var cfg = registry[key].menuConfig[root.id] || {};
+
+        // One extension, one screen, no sections: a parent wrapping a single
+        // child is noise, and "give my extension its own menu entry" is what
+        // standalone was asked for. So the screen IS the top-level item.
+        if (root.standalone && !root.sections.length && root.screens.length === 1) {
+            insertNode(key, panel, buildItem(root.screens[0], panel, ctx));
+            return;
+        }
+
+        var item = buildItem({
+            ext: root.ext,
+            itemId: root.id,
+            title: cfg.title || (root.standalone ? root.ext : 'Proxmod'),
+            iconCls: cfg.iconCls || 'fa fa-puzzle-piece',
+            item: {
+                xtype: MENU_ROOT_XTYPE,
+                expandedOnInit: cfg.expandedOnInit === undefined
+                    ? true
+                    : !!cfg.expandedOnInit,
+                proxmodSections: root.sections,
+                proxmodScreens: root.screens,
+                proxmodLayout: cfg.layout === 'tabs' ? 'tabs' : 'stacked',
+                proxmodContext: ctx,
+            },
+        }, panel, ctx);
+
+        // If the parent did not go in, the children must not either: with no
+        // group to descend into they would land at the top level.
+        if (!insertNode(key, panel, item)) {
+            return;
+        }
+
+        root.screens.forEach(function (spec) {
+            guard('menu screen ' + spec.ext + '/' + itemIdFor(spec), function () {
+                var child = buildItem(spec, panel, ctx);
+                child.groups = [root.id];
+
+                // A standalone extension that registered a screen without an id
+                // would otherwise collide with the parent built from the same id.
+                if (child.itemId === root.id) {
+                    child.itemId = root.id + '-screen';
+                }
+
+                if (insertNode(key, panel, child) && spec.after) {
+                    guard('placing menu item ' + child.itemId, function () {
+                        placeAfter(panel, child.itemId, spec.after);
+                    });
+                }
+            });
+        });
+    }
+
+    function applyMenu(key, panel, ctx) {
+        rootsFor(key).forEach(function (root) {
+            guard('menu item ' + root.id + ' on ' + TARGETS[key], function () {
+                installRoot(key, panel, root, ctx);
             });
         });
     }
@@ -262,7 +542,7 @@ var Proxmod = Proxmod || {};
         // extension written for a PVE that renamed the class degrades to no tab
         // instead of to a stuck UI.
         if (!Ext.ClassManager || !Ext.ClassManager.get(target)) {
-            Proxmod.log.warn('cannot add tabs to ' + target
+            Proxmod.log.warn('cannot extend ' + target
                 + ': the class does not exist in this Proxmox VE');
             return false;
         }
@@ -281,8 +561,10 @@ var Proxmod = Proxmod || {};
                 // tab wants a group.
                 me.callParent(arguments);
 
-                guard('adding tabs to ' + target, function () {
-                    applyTabs(key, me);
+                guard('adding proxmod items to ' + target, function () {
+                    var ctx = contextFor(me);
+                    applyTabs(key, me, ctx);
+                    applyMenu(key, me, ctx);
                 });
             },
         });
@@ -328,6 +610,79 @@ var Proxmod = Proxmod || {};
         return true;
     }
 
+    // spec: { ext, targets|target, mode, id, itemId, title, iconCls,
+    //         xtype (or item), standalone, weight, after }
+    function addMenuItem(spec) {
+        var o = spec || {};
+
+        if (!o.ext) {
+            Proxmod.log.error('addMenuItem needs the registering extension id in "ext"');
+            return false;
+        }
+        if (!o.xtype && !(o.item && o.item.xtype)) {
+            Proxmod.log.error(o.ext + ': addMenuItem needs an xtype');
+            return false;
+        }
+
+        var keys = resolveTargets(o);
+        if (!keys.length) {
+            Proxmod.log.error(o.ext + ': addMenuItem needs at least one target');
+            return false;
+        }
+
+        defineMenuRoot();
+
+        var ok = true;
+        keys.forEach(function (key) {
+            if (!install(key)) {
+                ok = false;
+                return;
+            }
+            var entry = {
+                ext: String(o.ext),
+                id: o.id,
+                itemId: o.itemId === undefined ? undefined : String(o.itemId),
+                title: o.title,
+                iconCls: o.iconCls,
+                after: o.after,
+                mode: o.mode === 'section' ? 'section' : 'screen',
+                standalone: !!o.standalone,
+                weight: o.weight === undefined ? 50 : Number(o.weight),
+                seq: menuSeq++,
+                item: Ext.apply({}, o.item),
+            };
+            if (o.xtype) {
+                entry.item.xtype = o.xtype;
+            }
+            registry[key].menu.push(entry);
+        });
+
+        return ok;
+    }
+
+    // spec: { targets|target, ext, title, iconCls, layout, expandedOnInit }
+    // With no `ext` this configures the shared Proxmod parent; with one, that
+    // extension's standalone parent. Defaults to every target, because a parent
+    // that looks different depending on what you clicked is a bug.
+    function configureMenu(spec) {
+        var o = spec || {};
+        var id = o.ext ? 'proxmod-' + o.ext : MENU_ROOT;
+
+        resolveTargets(o, 'all').forEach(function (key) {
+            var cfg = registry[key].menuConfig[id] || {};
+            // One key at a time, so leaving a field out of a later call does
+            // not silently unset what an earlier one asked for.
+            ['title', 'iconCls', 'layout', 'expandedOnInit'].forEach(function (name) {
+                if (o[name] !== undefined) {
+                    cfg[name] = o[name];
+                }
+            });
+            registry[key].menuConfig[id] = cfg;
+        });
+
+        return true;
+    }
+
     Proxmod.ui = {
         targets: TARGETS,
         addTab: addTab,
@@ -344,13 +699,43 @@ var Proxmod = Proxmod || {};
             return q && l;
         },
 
+        // A menu item lives in the config panel's left-hand tree rather than in
+        // its tab bar. A screen is a node of its own under the parent, with its
+        // own card; a section is rendered in the parent's own card.
+        addMenuItem: addMenuItem,
+        addMenuScreen: function (spec) {
+            var o = Ext.apply({}, spec);
+            o.mode = 'screen';
+            return addMenuItem(o);
+        },
+        addMenuSection: function (spec) {
+            var o = Ext.apply({}, spec);
+            o.mode = 'section';
+            return addMenuItem(o);
+        },
+        configureMenu: configureMenu,
+
         // Read-only view of what has been registered. proxmod-verify and the
         // browser console both use it; nothing else should.
         registrations: function () {
             var out = [];
             Object.keys(registry).forEach(function (key) {
                 registry[key].tabs.forEach(function (tab) {
-                    out.push({ target: key, ext: tab.ext, itemId: itemIdFor(tab) });
+                    out.push({
+                        target: key,
+                        kind: 'tab',
+                        ext: tab.ext,
+                        itemId: itemIdFor(tab),
+                    });
+                });
+                registry[key].menu.forEach(function (menu) {
+                    out.push({
+                        target: key,
+                        kind: 'menu-' + menu.mode,
+                        ext: menu.ext,
+                        itemId: itemIdFor(menu),
+                        parent: menu.standalone ? 'proxmod-' + menu.ext : MENU_ROOT,
+                    });
                 });
             });
             return out;

@@ -71,6 +71,18 @@ the main interface, novnc, xtermjs and mobile [PVE-F-022].
 **`pvemanagerlib.js`** — the single concatenated JavaScript bundle containing
 every `PVE.*` class. No module system, one global scope.
 
+**`PVE.panel.Config`** — the base class of every per-object configuration view:
+the datacenter, a node, a guest, a storage, a pool, a zone [PVE-F-030]. It is a
+card layout with a **tab bar** across the top and a **menu tree** down the left,
+both built by the same `insertNodes` [PVE-F-031]. Everything `Proxmod.ui` adds
+to the interface goes through it.
+
+**`insertNodes`** — `PVE.panel.Config`'s method for adding entries to that
+panel. Always appends, throws on a duplicate `itemId`, mutates the item it is
+given, and **descends into** `groups` without ever creating one
+[PVE-F-032][PVE-F-033]. Its signature is not API; `Proxmod.ui` exists so that
+extensions never call it.
+
 **UPID** — the identifier of a background task started with `fork_worker`.
 Returned immediately; the interface polls it.
 
@@ -150,6 +162,26 @@ checksummed revert, a state database. **Ships inert** — every packaged spec ha
 `"enabled": 0`. Enabling one forfeits every update-survival guarantee
 ([ADR 0008](adr/0008-patch-facility-ships-inert.md)).
 
+**tab** — a card an extension adds to the **tab bar** across the top of a config
+panel, beside Summary, Notes and the rest. Registered with `Proxmod.ui.addTab`
+and friends. Use one when your card is one more view of the object already
+selected.
+
+**menu item** — a card an extension adds to the **menu tree** down the left of a
+config panel, at the bottom, under a shared `Proxmod` node. Use one when the
+extension owns a place rather than a view. Two kinds:
+
+- **screen** — a tree node of its own, with its own card, activated by selecting
+  it. `Proxmod.ui.addMenuScreen`.
+- **section** — a fragment rendered inside the parent node's card, alongside
+  every other extension's. `Proxmod.ui.addMenuSection`.
+
+**target** — the config panel an extension is registering against, named rather
+than classed: `datacenter`, `node`, `qemu`, `lxc`, `storage`, `pool`, `zone`,
+`network`, plus the sets `guest` and `all` [PVE-F-034]. `Proxmod.ui.targets`
+maps each to the `PVE.*` class it stands for, so a Proxmox that renames one
+costs that target and nothing else.
+
 **`[REQ-*]`** — a normative requirement in [`specifications.md`](specifications.md),
 prefixed `FW`, `BE`, `FE`, `PKG`, `SEC` or `MF`.
 
@@ -189,5 +221,3 @@ suite.
 - [`architecture.md`](architecture.md) — the proxmod terms in context
 - [`pve-facts.md`](pve-facts.md) — every `[PVE-F-nnn]` above
 - [`specifications.md`](specifications.md) §3 — normative terminology
-</content>
-</invoke>

@@ -677,6 +677,11 @@ degrades to a missing tab instead of a blank interface.
 | `Proxmod.ui.addNodeTab(spec)` | Add a tab to the node view |
 | `Proxmod.ui.addQemuTab(spec)` / `addLxcTab(spec)` / `addGuestTab(spec)` | Add a tab to a guest view; `addGuestTab` adds to both |
 | `Proxmod.ui.addDatacenterTab(spec)` | Add a tab to the datacenter view |
+| `Proxmod.ui.addTab(target, spec)` | Add a tab to any key of `Proxmod.ui.targets` |
+| `Proxmod.ui.addMenuScreen(spec)` | Add a node to the config panel's left-hand menu tree, with a card of its own |
+| `Proxmod.ui.addMenuSection(spec)` | Add a section to the menu parent's own card |
+| `Proxmod.ui.addMenuItem(spec)` | Either of the two, selected by `spec.mode` |
+| `Proxmod.ui.configureMenu(spec)` | Title, icon, layout and initial state of a menu parent |
 | `Proxmod.ui.addStyle(ext, css)` | Inject a stylesheet scoped to the extension |
 | `Proxmod.ui.registrations()` | What has been registered, for debugging |
 
@@ -704,6 +709,46 @@ under `/proxmod/` are served **without authentication** [PVE-F-023].
 
 **[REQ-FE-026]** An extension MUST encode any value it renders that came from a
 guest, a user, or a remote system. ExtJS templates do not escape by default.
+
+### 7.4 The config-panel menu
+
+Every panel in [PVE-F-034]'s type-to-class map, `tag` excepted, is a
+`PVE.panel.Config` subclass and carries a `treelist` menu built by the same
+`insertNodes` used for tabs. An extension may own an entry in it.
+
+**[REQ-FE-027]** `Proxmod.ui` MUST expose every target in that map except `tag`,
+and MUST forward the selected object's identity to each item it inserts under
+the names PVE's own panels use — `nodename`, `vmid`, `storage`, `pool`, `zone`,
+`zoneType` [PVE-F-034]. An extension card MUST NOT parse the URL for them.
+
+**[REQ-FE-028]** A menu item MUST be one of two kinds: a **screen**, which is a
+tree node with a card of its own, or a **section**, which is rendered inside the
+parent node's card. Both MUST be registered through the same call and MUST
+differ only in `mode`.
+
+**[REQ-FE-029]** Menu items MUST be inserted after `callParent`, so they land at
+the bottom of the menu [PVE-F-033]. proxmod MUST NOT reorder Proxmox's own
+entries.
+
+**[REQ-FE-030]** A menu parent MUST be inserted before any child that names it
+in `groups`, and if the parent's insertion is refused its children MUST be
+skipped. `insertNodes` descends into groups and never creates one [PVE-F-033]:
+inserting a child whose group is absent appends it at the **top level**,
+silently, which scatters an extension's screens through the menu rather than
+failing visibly.
+
+**[REQ-FE-031]** Ordering among proxmod's own items MUST be deterministic across
+page loads: by `weight`, then by registration order. Menu contents that shuffle
+between loads are indistinguishable from a bug.
+
+**[REQ-FE-032]** By default every extension MUST share one parent node. An
+extension MAY request a top-level node of its own (`standalone`), and when it
+has exactly one screen and no sections that screen MUST *be* the node rather
+than be wrapped in one.
+
+**[REQ-FE-033]** A parent card with no sections registered MUST render a
+placeholder naming its child screens. `activateCard` shows whatever the card
+holds, so an empty card is a blank pane rather than an error.
 
 ---
 
@@ -1726,6 +1771,13 @@ express.
 | REQ-FE-024 | `callParent` first | 7.3 |
 | REQ-FE-025 | Nothing secret in an asset | 7.3 |
 | REQ-FE-026 | Encode everything rendered | 7.3 |
+| REQ-FE-027 | Every config-panel target, with its identity forwarded | 7.4 |
+| REQ-FE-028 | A menu item is a screen or a section | 7.4 |
+| REQ-FE-029 | Menu items land at the bottom; PVE's own are not reordered | 7.4 |
+| REQ-FE-030 | Parent before children, or no children at all | 7.4 |
+| REQ-FE-031 | Deterministic ordering: weight, then registration | 7.4 |
+| REQ-FE-032 | One shared parent by default; standalone is opt-in | 7.4 |
+| REQ-FE-033 | A parent card with no sections renders a placeholder | 7.4 |
 
 ### `MF` — manifest and registry
 
@@ -1794,5 +1846,3 @@ express.
 | REQ-SEC-009 | Re-validate at the point of interpolation | 11.3 |
 | REQ-SEC-010 | Access control is PVE's, declared per method | 11.4 |
 | REQ-SEC-011 | Never touch `/etc/pve` from a script or at boot | 11.4 |
-</content>
-</invoke>

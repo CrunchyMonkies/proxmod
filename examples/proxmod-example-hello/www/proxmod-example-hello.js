@@ -94,6 +94,55 @@
         },
     });
 
+    // A section is rendered inside the shared Proxmod card rather than getting a
+    // card of its own, so it is a fragment of a page: no title bar of its own
+    // beyond the framing proxmod gives it, and no assumption about its width.
+    Ext.define('ProxmodExample.HelloSection', {
+        extend: 'Ext.panel.Panel',
+        alias: 'widget.proxmodExampleHelloSection',
+
+        border: true,
+        bodyPadding: 10,
+
+        initComponent: function () {
+            var me = this;
+
+            // Sections are registered against targets that have no node — a
+            // pool, the datacenter — so nodename is genuinely optional here,
+            // unlike in the tab panel above.
+            me.items = [{
+                xtype: 'displayfield',
+                fieldLabel: gettext('Scope'),
+                value: Ext.String.htmlEncode(me.nodename || gettext('Cluster')),
+            }];
+
+            me.callParent();
+        },
+    });
+
+    // The same panel again, this time as a screen in the config panel's
+    // left-hand menu tree rather than as a tab. It lands under a "Proxmod" node
+    // at the bottom of the tree, which every extension shares.
+    Proxmod.ui.addMenuScreen({
+        ext: 'example-hello',
+        target: 'node',
+        id: 'greeting',
+        title: gettext('Greeting'),
+        iconCls: 'fa fa-comment-o',
+        xtype: 'proxmodExampleHello',
+    });
+
+    // And a section, which is what you get by selecting the Proxmod node
+    // itself. Registered for the datacenter as well, to show that a target with
+    // no node behind it works.
+    Proxmod.ui.addMenuSection({
+        ext: 'example-hello',
+        targets: ['node', 'datacenter'],
+        id: 'about',
+        title: gettext('Hello'),
+        xtype: 'proxmodExampleHelloSection',
+    });
+
     // One call, one tab. addNodeTab maintains a single override chain per host
     // class no matter how many extensions add tabs, and swallows an exception
     // from this callback rather than letting it reach Ext's constructor.
