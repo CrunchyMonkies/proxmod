@@ -3,8 +3,18 @@
 **Status:** Living
 **Applies to:** Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
-**Verification method:** read directly out of `proxmox-ve_9.1-1.iso` with
-`scripts/extract-pve-source.sh`; raw evidence in [`facts/pve-9.1.1.txt`](facts/pve-9.1.1.txt)
+**Verification method:** two independent harvests, both checked in.
+
+| Source | Command | Evidence |
+|---|---|---|
+| Upstream git, pinned in `docs/third_party/` | `make facts-src` | [`facts/pve-src.txt`](facts/pve-src.txt) |
+| A release ISO | `make facts ISO=…` | [`facts/pve-9.1.1.txt`](facts/pve-9.1.1.txt) |
+
+The submodules are the primary source: they need no ISO, they are searchable in
+place, and they hold the per-file `www/manager6/*.js` sources that a packaged
+PVE has already concatenated into one `pvemanagerlib.js`. The ISO harvest is the
+authority when the two disagree, because it is what is actually installed on a
+host — the submodules track `master`, which is ahead of any release.
 
 proxmod attaches to Proxmox VE at seams that are not documented API. Anything
 this project claims about Proxmox internals is recorded here as a numbered fact
@@ -16,6 +26,7 @@ Re-derive the evidence for a new point release with:
 
 ```sh
 make facts ISO=/path/to/proxmox-ve_9.x-1.iso
+make facts-src                  # no ISO needed; reads docs/third_party/ at its pins
 git diff docs/facts/
 ```
 
@@ -250,18 +261,28 @@ nothing else.
 
 ### [PVE-F-030] The ExtJS classes worth overriding
 
-**Status:** Verified (9.1.1) — `/usr/share/pve-manager/js/pvemanagerlib.js`
+**Status:** Verified (9.1.1) — `/usr/share/pve-manager/js/pvemanagerlib.js`;
+re-verified against `docs/third_party/pve-manager` at `43df2e01`, `www/manager6/`
 
 ```
 Ext.define('PVE.dc.Config'
 Ext.define('PVE.lxc.Config'
 Ext.define('PVE.node.Config'
 Ext.define('PVE.qemu.Config'
+Ext.define('PVE.storage.Browser'
+Ext.define('PVE.pool.Config'
+Ext.define('PVE.sdn.Browser'
+Ext.define('PVE.network.Browser'
 ```
 
-**Consequence.** These are the hook hosts for adding a tab at the datacenter,
-container, node and virtual-machine levels respectively. `PVE.storage.Config`
-does not exist under that name; storage panels are built differently.
+**Consequence.** These are the eight hook hosts `Proxmod.ui` exposes as targets.
+Each extends `PVE.panel.Config`, which is the precondition for everything in
+`[PVE-F-031]` through `[PVE-F-034]`.
+
+Note the naming: `PVE.storage.Config` does **not** exist. The per-storage panel
+is `PVE.storage.Browser`, and the per-zone one is `PVE.sdn.Browser` — "Browser"
+rather than "Config" for the two that are reached through a parent list. Any
+code that guesses at `<thing>.Config` gets those two wrong.
 
 ### [PVE-F-031] `insertNodes` is the tab-insertion entry point
 
@@ -306,6 +327,81 @@ and copies `groups`.
 Nodes are always `appendChild`ed; there is no positional argument. Ordering a
 tab relative to an existing one means moving the node afterwards, which
 `Proxmod.ui` does on a best-effort basis for `after:`.
+
+### [PVE-F-033] `groups` are descended into, never created
+
+**Status:** Verified — `docs/third_party/pve-manager` at `43df2e01`,
+`www/manager6/panel/ConfigPanel.js` (`insertNodes`) and `www/manager6/node/Config.js`
+
+```js
+while (Ext.isArray(item.groups) && item.groups.length > 0) {
+    let group = item.groups.shift();
+    let child = curnode.findChild('id', group);
+    if (child === null) {
+        break;                       // <- gives up; it does NOT create the group
+    }
+    curnode = child;
+}
+var node = curnode.findChild('id', item.itemId);
+if (node === null) { curnode.appendChild(treeitem); }
+```
+
+A group is therefore nothing special: it is an item inserted **earlier** whose
+`itemId` equals the group name. PVE builds its own that way — the node panel's
+Services entry is a real card (`itemId: 'services'`, `expandedOnInit: true`)
+with children carrying `groups: ['services']`.
+
+**Consequence.** Two things, and the first is a correctness requirement rather
+than a preference.
+
+The parent must be inserted **before** any child naming it. If it is not, the
+`break` above leaves `curnode` at the root and the child is appended at the top
+level — silently, with no error anywhere. An extension's screens would scatter
+through the menu instead of failing visibly. `Proxmod.ui` inserts each menu root
+first and, if that insertion is refused, skips its children entirely rather than
+orphaning them.
+
+A parent with a card of its own *and* children under it is the native shape
+here, not a workaround: `savedItems[itemId]` is populated for every inserted
+item, so a group node is selectable and `activateCard` will show it. That is
+what makes `Proxmod.ui.addMenuSection` (render in the parent's card) and
+`addMenuScreen` (a child node with its own card) two uses of one mechanism.
+
+### [PVE-F-034] The resource tree's type-to-panel map, and the context each panel carries
+
+**Status:** Verified — `docs/third_party/pve-manager` at `43df2e01`,
+`www/manager6/Workspace.js:242-255`
+
+```js
+let treeTypeToClass = {
+    root: 'PVE.dc.Config',      storage: 'PVE.storage.Browser',
+    node: 'PVE.node.Config',    sdn:     'PVE.sdn.Browser',
+    qemu: 'PVE.qemu.Config',    network: 'PVE.network.Browser',
+    lxc:  'pveLXCConfig',       pool:    'pvePoolConfig',
+                                tag:     'pveTagConfig',
+};
+...
+treeTypeToClass[treeNode.data.type || 'root'] || 'pvePanelConfig'
+```
+
+Each panel copies identifying fields from `pveSelNode.data` onto its child
+items by hand. The names change on the way across:
+
+| `pveSelNode.data` | on the card | seen on |
+|---|---|---|
+| `node` | `nodename` | node, qemu, lxc, storage, sdn, network |
+| `vmid` | `vmid` | qemu, lxc |
+| `storage` | `storage` | storage |
+| `pool` | `pool` | pool |
+| `sdn` | **`zone`** | sdn |
+| `zone-type` | `zoneType` | sdn |
+
+**Consequence.** `Proxmod.ui` targets every entry in that map except `tag`,
+which has no per-object configuration panel worth extending, and forwards the
+whole right-hand column onto every item it inserts. An extension card reads
+`this.nodename` or `this.storage` exactly as a stock PVE one does, and never
+parses the URL. The `sdn` → `zone` rename is the one that catches people: the
+tree says `sdn` and every panel says `zone`.
 
 ---
 

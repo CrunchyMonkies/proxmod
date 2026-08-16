@@ -1,0 +1,52 @@
+# Upstream Proxmox VE source, vendored read-only, for research only.
+#
+# They live under docs/ because that is what they are: documentation source.
+# proxmod attaches to Proxmox VE at seams that are not documented API, and
+# docs/pve-facts.md records every claim about them with evidence. These
+# checkouts are where that evidence comes from — they let anyone re-derive a
+# fact without an installer ISO, and they are what `ix map .` indexes so the
+# upstream classes are searchable alongside our own.
+#
+# Nothing here is built, linted, installed, packaged or imported. proxmod does
+# not depend on a single line of it, and deleting the whole directory breaks
+# nothing but `make facts-src`. debian/source/options keeps it out of the source
+# package, no debian/docs ships it, and the Makefile's lint globs are written so
+# they cannot reach in — keep it that way if you ever widen one.
+#
+# shallow = true on every entry: these are reference checkouts, not history to
+# bisect. git.proxmox.com publishes no tags on these mirrors, so the pin is the
+# recorded SHA and nothing else. See docs/pve-facts.md for which SHA each fact
+# was verified against.
+
+[submodule "docs/third_party/pve-manager"]
+	path = docs/third_party/pve-manager
+	url = https://git.proxmox.com/git/pve-manager.git
+	shallow = true
+[submodule "docs/third_party/pve-common"]
+	path = docs/third_party/pve-common
+	url = https://git.proxmox.com/git/pve-common.git
+	shallow = true
+[submodule "docs/third_party/pve-http-server"]
+	path = docs/third_party/pve-http-server
+	url = https://git.proxmox.com/git/pve-http-server.git
+	shallow = true
+[submodule "docs/third_party/proxmox-widget-toolkit"]
+	path = docs/third_party/proxmox-widget-toolkit
+	url = https://git.proxmox.com/git/proxmox-widget-toolkit.git
+	shallow = true
+[submodule "docs/third_party/pve-access-control"]
+	path = docs/third_party/pve-access-control
+	url = https://git.proxmox.com/git/pve-access-control.git
+	shallow = true
+[submodule "docs/third_party/qemu-server"]
+	path = docs/third_party/qemu-server
+	url = https://git.proxmox.com/git/qemu-server.git
+	shallow = true
+[submodule "docs/third_party/pve-container"]
+	path = docs/third_party/pve-container
+	url = https://git.proxmox.com/git/pve-container.git
+	shallow = true
+[submodule "docs/third_party/pve-storage"]
+	path = docs/third_party/pve-storage
+	url = https://git.proxmox.com/git/pve-storage.git
+	shallow = true

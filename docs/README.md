@@ -126,10 +126,20 @@ git diff docs/facts/
 
 A diff means a seam moved, and tells you exactly which sentences to re-read.
 
+The same evidence can be re-derived with no ISO at all. `docs/third_party/`
+holds the eight upstream Proxmox repositories as SHA-pinned shallow submodules,
+so the source behind every fact is readable in place:
+
+```sh
+make submodules       # populate docs/third_party/
+make facts-src        # re-derive docs/facts/pve-src.txt from it
+```
+
+They are reference material only: nothing builds against them, and
+`debian/source/options` keeps them out of every package.
+
 **Every document states what it costs.** proxmod attaches to interfaces Proxmox
 never published; the limitations are in the documents, not omitted from them.
 [`compatibility.md`](compatibility.md) §3 lists what breaks when each seam moves,
 [`architecture.md`](architecture.md) §8 lists what proxmod cannot do, and
 [`verification.md`](verification.md) §6 lists what verification cannot tell you.
-</content>
-</invoke>

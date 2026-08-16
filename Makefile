@@ -52,7 +52,14 @@ SHELL_FILES  := $(EXEC_SH) $(BIN_SH) $(wildcard scripts/*.sh) \
 # extension authors copy, so a syntax error in it is a defect in ours.
 JS_FILES     := $(wildcard www/*.js) $(wildcard examples/*/www/*.js)
 
-.PHONY: all build install test lint lint-perl lint-shell lint-js deb clean e2e facts help
+# Vendored upstream Proxmox source. Read-only reference: nothing here is built,
+# linted, installed or packaged, and every target above works without it. Note
+# that none of the lists above can glob into it — keep it that way, because a
+# find-based glob would silently start linting eight upstream repositories.
+THIRD_PARTY := docs/third_party
+
+.PHONY: all build install test lint lint-perl lint-shell lint-js deb clean e2e \
+        facts facts-src submodules help
 
 all: build
 
@@ -167,11 +174,24 @@ deb:
 e2e:
 	./scripts/e2e.sh
 
+## submodules: fetch the vendored Proxmox source into docs/third_party/ (read-only
+##             reference for docs/pve-facts.md; no other target needs it).
+submodules:
+	git submodule update --init --depth 1 --recursive
+	@echo "docs/third_party/ populated. Run 'ix map .' to index it, if you use ix."
+
 ## facts: re-derive the PVE seam evidence from an installer ISO (no PVE host).
 ##        make facts ISO=/path/to/proxmox-ve_9.x-1.iso
 facts:
 	@[ -n "$(ISO)" ] || { echo "usage: make facts ISO=/path/to/proxmox-ve.iso" >&2; exit 2; }
 	./scripts/extract-pve-source.sh --iso "$(ISO)" --harvest docs/facts
+
+## facts-src: re-derive the same evidence from docs/third_party/ instead of an ISO.
+##            Needs no ISO, and reaches the per-file www/manager6 sources that
+##            a packaged PVE has already concatenated away.
+facts-src:
+	@[ -d $(THIRD_PARTY)/pve-manager/www ] || $(MAKE) submodules
+	./scripts/harvest-pve-src.sh docs/facts
 
 clean:
 	rm -rf build

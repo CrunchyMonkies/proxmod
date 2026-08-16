@@ -50,6 +50,29 @@ code that only compiles without it fails on a real host and nowhere else),
 `shellcheck -x` on every shell file including the maintainer scripts, and
 `node --check` on the JavaScript.
 
+### The vendored Proxmox source
+
+proxmod attaches to seams that are not documented API, so a question like "does
+`insertNodes` create a group node or not?" has to be answered by reading
+Proxmox, not by remembering it. `docs/third_party/` holds eight upstream
+repositories as SHA-pinned shallow submodules for exactly that:
+
+```sh
+make submodules       # git submodule update --init --depth 1 --recursive
+make facts-src        # re-derive docs/facts/pve-src.txt from them
+```
+
+They are read-only reference checkouts. Nothing builds against them, `make lint`
+cannot reach them, and `debian/source/options` keeps them out of every source
+package — check that last one has not regressed with:
+
+```sh
+dpkg-deb -c ../proxmod_*_all.deb | grep third_party && echo BROKEN
+```
+
+You do not need them to build, test or ship proxmod. You need them to change
+anything that cites a `[PVE-F-nnn]` fact. See [`pve-facts.md`](pve-facts.md).
+
 ---
 
 ## 3. Running the integration tests

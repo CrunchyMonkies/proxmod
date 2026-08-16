@@ -1,0 +1,12 @@
+# debian/source/format is '3.0 (native)', which means dpkg-source tars the
+# entire working tree into the source package. docs/third_party/ holds several
+# hundred megabytes of vendored upstream Proxmox git checkouts that exist only
+# so a human (or `ix`) can read the code proxmod attaches to — none of it is
+# built, installed or shipped.
+#
+# Without these two lines every `make deb` would pull that into the package.
+# The second line is not redundant: tar-ignore is matched by `tar --exclude`,
+# which needs the directory pattern to catch the entry itself and the wildcard
+# to catch everything below it.
+tar-ignore = docs/third_party
+tar-ignore = docs/third_party/*
