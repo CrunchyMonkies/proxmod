@@ -81,5 +81,3 @@ parse error takes out every extension. Rejected on the isolation ground alone.
 **Have extensions register into an existing PVE bundle** — would require
 modifying `pvemanagerlib.js`, which is exactly the file mutation ADR 0001 exists
 to avoid.
-</content>
-</invoke>

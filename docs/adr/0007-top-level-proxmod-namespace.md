@@ -83,5 +83,3 @@ sufficiently thorough `pve-manager` upgrade.
 **No reserved prefixes, coordinate by convention** — works until two extensions
 from different authors both define `.gpu-panel-header`, at which point one of
 them silently restyles the other.
-</content>
-</invoke>

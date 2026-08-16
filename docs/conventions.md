@@ -199,5 +199,3 @@ that seam moved, and every claim citing it needs re-reading.
 - [`specifications.md`](specifications.md) — the normative requirements
 - [`pve-facts.md`](pve-facts.md) — the ledger
 - [`security.md`](security.md) — why the Perl and JS rules are not style
-</content>
-</invoke>

@@ -286,5 +286,3 @@ dpkg-trigger proxmod-reapply
 - [`troubleshooting.md`](troubleshooting.md) — symptom-first
 - [`patching.md`](patching.md) — before you enable a patch spec
 - [`packaging.md`](packaging.md) — where the trigger and the maintainer scripts fit
-</content>
-</invoke>

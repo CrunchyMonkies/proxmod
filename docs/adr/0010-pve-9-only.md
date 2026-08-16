@@ -65,5 +65,3 @@ which is the thing the whole citation convention exists to prevent.
 **`Breaks: pve-manager (<< 9~)`** — would turn an honest scope statement into a
 hard block on hosts where proxmod would degrade gracefully anyway. Rejected for
 the same reason as an upper ceiling.
-</content>
-</invoke>

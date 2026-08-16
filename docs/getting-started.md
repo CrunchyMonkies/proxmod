@@ -214,5 +214,3 @@ Full lists: [`packaging.md`](packaging.md) §9,
 | Building the `.deb` | [`packaging.md`](packaging.md) |
 | How Proxmox itself works | [`pve-internals.md`](pve-internals.md) |
 | How proxmod works | [`architecture.md`](architecture.md) |
-</content>
-</invoke>

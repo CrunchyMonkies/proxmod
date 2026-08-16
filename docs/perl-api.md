@@ -371,5 +371,3 @@ host from inside an extension, and neither is something a wrapper can catch.
 - [`specifications.md`](specifications.md) §6 — normative requirements (`REQ-BE-*`)
 - [`pve-internals.md`](pve-internals.md) — `RESTHandler`, the request lifecycle, taint
 - [`extension-manifest.md`](extension-manifest.md) — how your module gets named
-</content>
-</invoke>

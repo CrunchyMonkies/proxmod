@@ -643,5 +643,3 @@ Before you ship:
 - [`specifications.md`](specifications.md) §6 — the normative requirements (`REQ-BE-*`)
 - [`pve-internals.md`](pve-internals.md) — how the machinery underneath works
 - [`troubleshooting.md`](troubleshooting.md) — symptom-first debugging
-</content>
-</invoke>

@@ -95,5 +95,3 @@ carries the reason.
 **A state file written at boot** — cheaper than reading the journal, and it can
 be stale in exactly the case that matters: written by a previous process, still
 present, still saying "fine".
-</content>
-</invoke>

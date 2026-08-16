@@ -165,5 +165,3 @@ convention forbids.
 - [`verification.md`](verification.md) — what to run after an upgrade
 - [`decisions.md`](decisions.md) — why no version ceiling, in ADR form
 - [`specifications.md`](specifications.md) §12–13 — normative versioning and update-survival
-</content>
-</invoke>

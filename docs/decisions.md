@@ -117,5 +117,3 @@ what it replaced.
 - [`specifications.md`](specifications.md) — the normative requirements
 - [`patching.md`](patching.md) §2 — the prior-art post-mortem cited throughout
 - [`pve-facts.md`](pve-facts.md) — the fact ledger
-</content>
-</invoke>

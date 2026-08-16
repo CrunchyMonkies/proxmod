@@ -259,5 +259,3 @@ it should refuse.
 - [`js-api.md`](js-api.md) §6 — output encoding
 - [`patching.md`](patching.md) — the risks of the one facility that modifies Proxmox files
 - [`pve-internals.md`](pve-internals.md) §6, §9 — PVE's auth model and Perl under `-T`
-</content>
-</invoke>

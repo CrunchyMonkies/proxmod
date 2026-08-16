@@ -74,5 +74,3 @@ something breaks. The 403 arrives long before the warning is found.
 
 **Lint it in the build instead** — catches it only for extensions built with
 proxmod's tooling, and not at all for one written by hand.
-</content>
-</invoke>

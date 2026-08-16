@@ -241,5 +241,3 @@ systemctl restart pvedaemon pveproxy
 - [`verification.md`](verification.md) — what `proxmod-verify` checks
 - [`troubleshooting.md`](troubleshooting.md) — symptom-first
 - [`compatibility.md`](compatibility.md) — what happens on a Proxmox proxmod has not seen
-</content>
-</invoke>

@@ -422,5 +422,3 @@ them by hand anyway the first time you package something.
 - [`patching.md`](patching.md) — the post-mortem behind half the rules above
 - [`verification.md`](verification.md) — what `proxmod-verify` checks and why
 - [`compatibility.md`](compatibility.md) — the no-ceiling policy in full
-</content>
-</invoke>

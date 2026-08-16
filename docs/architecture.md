@@ -317,5 +317,3 @@ Stated plainly, because they are real:
 - [`pve-internals.md`](pve-internals.md) — the Proxmox side
 - [`pve-facts.md`](pve-facts.md) — every `[PVE-F-nnn]` cited above
 - [`security.md`](security.md) — the trust boundaries
-</content>
-</invoke>

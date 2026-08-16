@@ -346,5 +346,3 @@ host's local divergence.
 - [`packaging.md`](packaging.md) §4 — maintainer-script rules, each traced to a defect above
 - [`frontend-extensions.md`](frontend-extensions.md), [`backend-extensions.md`](backend-extensions.md) — what to do instead
 - [`security.md`](security.md) — why a writable patched file is a root compromise
-</content>
-</invoke>

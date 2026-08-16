@@ -66,5 +66,3 @@ machinery.
 ceiling, delayed until after the upgrade, and it discards perfectly good
 per-seam degradation in favour of an all-or-nothing guess based on a version
 string.
-</content>
-</invoke>

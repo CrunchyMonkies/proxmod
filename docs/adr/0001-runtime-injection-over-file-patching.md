@@ -165,5 +165,3 @@ smaller, which would be a good outcome.
 - [`pve-facts.md`](../pve-facts.md) — `[PVE-F-002]`, `[PVE-F-020]`–`[PVE-F-026]`
 - [ADR 0002](0002-systemd-drop-in-execstart-wrapper.md) — how the module is injected
 - [ADR 0008](0008-patch-facility-ships-inert.md) — why the escape hatch exists anyway
-</content>
-</invoke>

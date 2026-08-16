@@ -93,5 +93,3 @@ does correctly, and still fires mid-unpack.
 puts the burden on every consumer, and a consumer that forgets produces a
 silently inert extension. The whole point of the contract is that there is
 nothing to forget.
-</content>
-</invoke>

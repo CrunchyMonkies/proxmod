@@ -370,5 +370,3 @@ silent, and whether `proxmodctl disable` changes the symptom.
 - [`compatibility.md`](compatibility.md) — when Proxmox moved a seam
 - [`perl-api.md`](perl-api.md), [`js-api.md`](js-api.md) — the two API surfaces
 - [`pve-internals.md`](pve-internals.md) §13 — things that look like they work and do not
-</content>
-</invoke>

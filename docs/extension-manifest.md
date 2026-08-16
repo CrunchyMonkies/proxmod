@@ -277,5 +277,3 @@ proxmod-verify --json          # includes each extension and its state
 - [`backend-extensions.md`](backend-extensions.md) — what `backend.module` must provide
 - [`frontend-extensions.md`](frontend-extensions.md) — what an asset may do
 - [`packaging.md`](packaging.md) — how the file gets onto the host
-</content>
-</invoke>

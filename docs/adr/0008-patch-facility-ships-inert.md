@@ -98,5 +98,3 @@ default install for the sake of a demonstration.
 **A separate `proxmod-patch` package.** Considered, and rejected as ceremony —
 inert code in the main package is already inert, and a second package implies
 the facility is a peer of the runtime mechanism rather than a fallback from it.
-</content>
-</invoke>

@@ -739,5 +739,3 @@ invalidates the fact that cited it — and every requirement in
 | Modify a Proxmox file anyway | [`patching.md`](patching.md), then reconsider |
 | Know exactly what proxmod promises | [`specifications.md`](specifications.md) |
 | Check a claim made here | [`pve-facts.md`](pve-facts.md) |
-</content>
-</invoke>

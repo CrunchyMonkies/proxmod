@@ -91,5 +91,3 @@ handling and applies to *every* Perl process on the host, including `pvesh`,
 **A systemd generator** — would work and is harder to inspect, harder to
 disable, and runs earlier than anything needs to. A drop-in an administrator can
 read with `systemctl cat pveproxy` is worth more than the elegance.
-</content>
-</invoke>
