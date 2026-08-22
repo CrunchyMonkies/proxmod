@@ -1,7 +1,7 @@
 # The JavaScript API
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.0, Proxmox VE 9.x (ExtJS 7.0)
+**Applies to:** proxmod 0.2.1, Proxmox VE 9.x (ExtJS 7.0)
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every signature, default and failure mode below was
 read out of [`www/proxmod-ui.js`](../www/proxmod-ui.js); injection and loader
@@ -25,7 +25,7 @@ The one-letter difference is unfortunate and permanent.
 
 ### `Proxmod.version`
 
-String — the framework version that served this page. `'0.2.0'`.
+String — the framework version that served this page. `'0.2.1'`.
 
 ### `Proxmod.guard(what, fn)`
 

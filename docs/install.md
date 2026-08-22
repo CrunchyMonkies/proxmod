@@ -1,7 +1,7 @@
 # Installing proxmod
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.1, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the file manifest is the `install` target of the
 [`Makefile`](../Makefile) and [`debian/`](../debian/); the removal behaviour is
@@ -11,7 +11,7 @@ the maintainer scripts, tested in `t/09-reapply.t` and the QEMU suite
 
 ## 1. Before you start
 
-- **Proxmox VE 9.x.** proxmod 0.2.0 targets 9.x only.
+- **Proxmox VE 9.x.** proxmod 0.2.1 targets 9.x only.
 - **Root on the node.** Cluster-wide? Install on every node — proxmod is
   per-host, like `pveproxy` itself.
 - **Installing restarts `pvedaemon` and `pveproxy`.** Running guests are
@@ -22,7 +22,7 @@ the maintainer scripts, tested in `t/09-reapply.t` and the QEMU suite
 ## 2. Install
 
 ```sh
-apt install ./proxmod_0.2.0_all.deb
+apt install ./proxmod_0.2.1_all.deb
 ```
 
 Then, in order:

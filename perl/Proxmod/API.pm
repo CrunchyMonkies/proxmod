@@ -5,7 +5,7 @@ use warnings;
 
 use Proxmod::Log qw(log_debug log_info log_warn log_error);
 
-our $VERSION = '0.2.0';
+our $VERSION = '0.2.1';
 
 # The surface a backend extension codes against.
 #

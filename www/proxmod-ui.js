@@ -49,7 +49,7 @@ var Proxmod = Proxmod || {};
         return;
     }
 
-    Proxmod.version = '0.2.0';
+    Proxmod.version = '0.2.1';
 
     // ----------------------------------------------------------------- log
 

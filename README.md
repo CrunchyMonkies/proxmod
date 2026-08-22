@@ -9,7 +9,7 @@ proxmod modifies **zero Proxmox-owned files**. No `sed` into `index.html.tpl`, n
 and any number of extensions, `dpkg -V pve-manager libpve-common-perl
 libpve-http-server-perl` still reports a clean tree.
 
-> **Status:** in development, `v0.2.0`. Not affiliated with or endorsed by
+> **Status:** in development, `v0.2.1`. Not affiliated with or endorsed by
 > Proxmox Server Solutions GmbH. proxmod attaches at *unofficial* seams; see
 > [`docs/pve-facts.md`](docs/pve-facts.md) for exactly which, and what happens
 > when one moves.
@@ -67,7 +67,7 @@ On a **test host** first — this loads into `pvedaemon` and `pveproxy` and
 restarts them.
 
 ```sh
-apt install ./proxmod_0.2.0_all.deb
+apt install ./proxmod_0.2.1_all.deb
 proxmod-verify                                   # exits 0 when healthy
 dpkg -V pve-manager libpve-common-perl libpve-http-server-perl   # silent
 ```

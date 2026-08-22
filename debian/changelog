@@ -1,3 +1,28 @@
+proxmod (0.2.1) unstable; urgency=medium
+
+  * Frontend: proxmod-ui.js no longer runs in strict mode. ExtJS resolves
+    callParent by reading Function.caller on the calling method, and V8 hands
+    out null for that whenever the caller is a strict-mode function, so every
+    callParent under the directive failed inside ext-all.js with "Cannot read
+    properties of null (reading 'apply')". The override proxmod installs on
+    PVE.dc.Config and its seven siblings calls its parent first by design, so
+    the config panel never finished building and took the left-hand menu tree
+    with it. The override is installed on first registration, which is why a
+    host with no extension looked healthy and the interface broke as soon as
+    one arrived. Strictness is inherited by nested functions, so the directive
+    is gone from the file rather than from one method.
+  * The shipped example extension carried the same defect and is fixed with it.
+  * Guarded against a repeat, twice, because node --check cannot see it: make
+    lint-js rejects any asset that combines a 'use strict' directive with
+    callParent or callSuper, and t/06-frontend.t asserts the same over the
+    files this repo ships.
+  * Docs: the frontend authoring guide taught the bug — its copy-paste skeleton
+    carried the directive and its checklist required it. Corrected there and in
+    conventions, js-api and pve-internals, with the failure written out in
+    troubleshooting under the error text a browser prints.
+
+ -- proxmod maintainers <proxmod@localhost>  Sat, 22 Aug 2026 00:00:00 +0000
+
 proxmod (0.2.0) unstable; urgency=medium
 
   * Frontend: extensions can own an item in a config panel's left-hand menu

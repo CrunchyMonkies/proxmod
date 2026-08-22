@@ -1,3 +1,11 @@
+proxmod-example-hello (0.2.1) unstable; urgency=medium
+
+  * Drop 'use strict' from the frontend asset. It breaks every callParent in
+    the file: ExtJS resolves the parent method through Function.caller, which
+    V8 reports as null for a strict-mode caller.
+
+ -- proxmod maintainers <proxmod@localhost>  Sat, 22 Aug 2026 00:00:00 +0000
+
 proxmod-example-hello (0.2.0) unstable; urgency=medium
 
   * Demonstrate the config panel menu API: the extension now registers one

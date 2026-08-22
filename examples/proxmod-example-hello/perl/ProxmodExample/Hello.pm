@@ -22,7 +22,7 @@ use base qw(PVE::RESTHandler);
 # proxmod's own modules may not do this — they have to load in proxmod-verify
 # and under a bare `perl -c` too — but an extension has no such obligation.
 
-our $VERSION = '0.2.0';
+our $VERSION = '0.2.1';
 
 # The entry point Proxmod::Backend calls, once, with an API object scoped to
 # this extension. Its name is the whole contract.

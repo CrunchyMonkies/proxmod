@@ -1,7 +1,7 @@
 # Troubleshooting
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.1, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** each symptom maps to a check or a code path that
 produces it; check ids are from [`bin/proxmod-verify`](../bin/proxmod-verify)
@@ -224,8 +224,8 @@ the caller is a strict-mode function, so the parent method is never found and
 the panel never builds. Drop the directive from the file — strictness is
 inherited by every nested function, so there is no narrower fix. proxmod's own
 `proxmod-ui.js` carried the directive through 0.2.0 and broke every panel an
-extension touched — upgrade past it, and make the same edit in any extension
-asset of your own.
+extension touched; 0.2.1 removes it. Upgrade past it, and make the same edit in
+any extension asset of your own.
 
 ### The tab appears but is empty
 

@@ -6,7 +6,7 @@ use warnings;
 use Exporter 'import';
 our @EXPORT_OK = qw(log_debug log_info log_warn log_error);
 
-our $VERSION = '0.2.0';
+our $VERSION = '0.2.1';
 
 # Logging for code running inside pvedaemon and pveproxy.
 #

@@ -1,7 +1,7 @@
 # The extension manifest
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.0, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.1, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every field, default, pattern and rejection below was
 read out of [`perl/Proxmod/Registry.pm`](../perl/Proxmod/Registry.pm); parsing
@@ -230,7 +230,7 @@ proxmod-verify --json          # includes each extension and its state
 ```jsonc
 {
     "id": "example-hello",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "order": 50,
     "backend": {
         "module": "ProxmodExample::Hello",

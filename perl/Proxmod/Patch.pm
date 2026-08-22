@@ -10,7 +10,7 @@ use Digest::SHA ();
 use File::Path ();
 use File::Basename ();
 
-our $VERSION = '0.2.0';
+our $VERSION = '0.2.1';
 
 # The managed patch facility — proxmod's escape hatch, and the part of it you
 # should hope never to need.
