@@ -5,7 +5,7 @@
  * Everything an extension is allowed to touch in the web interface is reached
  * through the single global `Proxmod` created here.
  *
- * Three things about the environment this runs in are worth knowing before
+ * Four things about the environment this runs in are worth knowing before
  * reading further, because they explain most of the shape of this file.
  *
  * 1. There is no module system. pvemanagerlib.js is one concatenated bundle in
@@ -21,6 +21,14 @@
  *    logged in [PVE-F-023]. It contains no secrets, and neither may any
  *    extension asset.
  *
+ * 4. Nothing here runs in strict mode, and nothing here may. ExtJS resolves
+ *    `callParent` by reading `Function.caller` on the calling method, and V8
+ *    hands out null for that whenever the caller is a strict-mode function.
+ *    An `initComponent` under `'use strict'` therefore dies inside ExtJS with
+ *    "Cannot read properties of null (reading 'apply')", taking the panel it
+ *    belongs to with it. pvemanagerlib.js and ext-all.js are sloppy mode for
+ *    the same reason; so is every extension asset.
+ *
  * The prime directive applies here as much as in the Perl: a broken extension
  * must cost its own tab, not the web interface. Every callback into extension
  * code is wrapped, and every failure becomes a console message and nothing
@@ -32,7 +40,8 @@
 var Proxmod = Proxmod || {};
 
 (function () {
-    'use strict';
+    // No 'use strict' here — see (4) above. It would break every callParent in
+    // this file, and there is no way to opt one nested function back out.
 
     if (Proxmod.ui) {
         // The loader is idempotent and the index carries exactly one script

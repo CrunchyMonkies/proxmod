@@ -584,6 +584,12 @@ And the universal ExtJS rule: in an override, **call `callParent` first**, then
 do your work. An override that works before the parent has run leaves the
 component half-constructed if it throws.
 
+And the rule that makes that one work at all: **no `'use strict'` in a file that
+calls `callParent`**. ExtJS resolves the parent method through
+`Function.caller`, which V8 reports as `null` for a strict-mode caller, so the
+call fails with *Cannot read properties of null (reading 'apply')*. Strictness
+is inherited by nested functions, so it is a per-file decision.
+
 ---
 
 ## 11. The on-disk map

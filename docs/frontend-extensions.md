@@ -18,7 +18,7 @@ Read [`pve-internals.md`](pve-internals.md) §10 first. This document assumes it
 
 ## 1. The environment you are writing for
 
-Three facts shape everything below.
+Four facts shape everything below.
 
 **There is no module system.** The Proxmox web interface is one concatenated
 file, `pvemanagerlib.js`, evaluated in one global scope. No `import`, no
@@ -35,6 +35,21 @@ workspace synchronously; an exception inside `initComponent` takes the panel and
 everything after it. proxmod calls into your registrations inside a `try`/`catch`
 so a broken extension degrades to a missing tab — but that protection stops at
 the boundary. Code inside your own component's callbacks is on its own.
+
+**Strict mode is not available.** ExtJS resolves `callParent` by reading
+`Function.caller` on the calling method, and V8 hands out `null` for that
+whenever the caller is a strict-mode function. A `'use strict'` anywhere above
+an override therefore turns every `callParent` under it into
+
+```
+Uncaught TypeError: Cannot read properties of null (reading 'apply')
+    at constructor.callParent (ext-all.js)
+```
+
+and the panel that override belongs to never builds. Strictness is inherited by
+every nested function, so there is no opting one method back out: leave the
+directive out of the file. `pvemanagerlib.js` and `ext-all.js` are sloppy mode
+for the same reason.
 
 ### When your code runs
 
@@ -69,7 +84,7 @@ constructed. Anything needing a live workspace goes in your own
 ```js
 // /usr/share/proxmod/www/acme-foo.js
 (function () {
-    'use strict';
+    // No 'use strict' — see §1. It would break every callParent below.
 
     // proxmod may be absent — an administrator can disable it, and this file
     // could be loaded by something else. Fail into doing nothing.
@@ -528,7 +543,7 @@ success: function (response) {
 
 ## 9. Checklist
 
-- [ ] Wrapped in an IIFE with `'use strict'`, touching one global
+- [ ] Wrapped in an IIFE, touching one global — and **not** `'use strict'`
 - [ ] Guarded by `if (typeof Proxmod === 'undefined' || !Proxmod.ui) { return; }`
 - [ ] Every registration carries `ext`
 - [ ] No hand-written `itemId`

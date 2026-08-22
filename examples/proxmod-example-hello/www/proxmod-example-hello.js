@@ -5,7 +5,7 @@
 // loaded, but no Ext.onReady handler has run yet [PVE-F-021]. That window is
 // what makes it possible to override a component that has not been constructed.
 //
-// Three things to know before writing one of these:
+// Four things to know before writing one of these:
 //
 //   1. There is no module loader. The Proxmox web interface is one concatenated
 //      bundle in a single global scope, so everything below is wrapped in an
@@ -16,9 +16,13 @@
 //      into extensions inside a try/catch and the helpers below are written to
 //      degrade into a missing tab, but that protection stops at the boundary —
 //      code inside a component's own callbacks is on its own.
+//   4. No 'use strict'. ExtJS resolves callParent by reading Function.caller on
+//      the calling method, and V8 hands out null for that whenever the caller
+//      is a strict-mode function — a strict initComponent dies inside ExtJS
+//      with "Cannot read properties of null (reading 'apply')".
 
 (function () {
-    'use strict';
+    // Deliberately sloppy mode: callParent below needs it. See (4) above.
 
     // proxmod may not be present: an administrator can disable it, and this
     // file could be loaded by something else entirely. Fail into doing nothing.

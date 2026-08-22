@@ -123,6 +123,12 @@ One concatenated bundle, one global scope, no module system, ES3-era syntax.
 
 **Wrap each asset in an IIFE.** One accidental global is one collision.
 
+**No `'use strict'`.** ExtJS resolves `callParent` by reading `Function.caller`
+on the calling method and V8 returns `null` for that when the caller is strict,
+so a strict `initComponent` dies inside ExtJS with *Cannot read properties of
+null (reading 'apply')* and takes its panel with it. Strictness is inherited by
+nested functions, so the directive is all-or-nothing per file: leave it out.
+
 **`callParent` first** in an override, before your own work — the parent builds
 the thing you are about to modify.
 

@@ -6,7 +6,7 @@ use warnings;
 use lib 't/lib';
 use lib 'perl';
 
-use Test::More tests => 16;
+use Test::More tests => 17;
 use ProxmodTest qw(tempdir write_file capture_log capture_debug_log is_tainted repo_root);
 
 use JSON::PP ();
@@ -456,4 +456,27 @@ subtest 'an asset name off disk is rebuilt, not passed through' => sub {
     ok(defined $asset, 'the asset survived');
     ok(!is_tainted($asset->{url}), 'and the url it will be served under is untainted');
     is($asset->{url}, '/proxmod/hello.js?v=1.0', 'with the name intact');
+};
+
+subtest 'the shipped JavaScript is not in strict mode' => sub {
+    plan tests => 2;
+
+    # ExtJS resolves callParent by reading Function.caller on the calling
+    # method, and V8 hands out null for that whenever the caller is a
+    # strict-mode function: a strict initComponent dies inside ext-all.js with
+    # "Cannot read properties of null (reading 'apply')" and takes its panel
+    # with it. Nothing catches that here — it is a browser-only failure — so
+    # the directive itself is what gets asserted against.
+    my $root = repo_root();
+
+    for my $file ('www/proxmod-ui.js',
+        'examples/proxmod-example-hello/www/proxmod-example-hello.js') {
+
+        my $body = slurp("$root/$file");
+        my $strict = $body =~ m{^\s*['"]use strict['"];}m;
+        my $parent = $body =~ m{\bcallParent\b|\bcallSuper\b};
+
+        ok(!($strict && $parent),
+            "$file does not combine 'use strict' with callParent");
+    }
 };

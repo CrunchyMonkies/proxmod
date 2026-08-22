@@ -363,6 +363,12 @@ initComponent: function () {
 `callParent` works too, but only for the top level, and it breaks the moment a
 tab wants a group.
 
+**No strict mode, anywhere above an override.** `callParent` is resolved from
+`Function.caller`, which V8 reports as `null` for a strict-mode caller — a
+`'use strict'` in your file turns every `callParent` under it into `Cannot read
+properties of null (reading 'apply')` and the panel never builds. Strictness is
+inherited by nested functions, so leave the directive out of the file entirely.
+
 **The seam probe.** Before defining the override, proxmod checks
 `Ext.ClassManager.get(target)`. Defining an override for a class that does not
 exist leaves it pending in `Ext.Loader` forever — a *stuck* interface, not a

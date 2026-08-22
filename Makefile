@@ -148,6 +148,12 @@ lint-shell:
 # doing: these files are injected into a page that has already loaded the
 # entire Proxmox interface, so a parse error takes the console with it.
 #
+# Plus one rule a parser cannot catch: strict mode and callParent are mutually
+# exclusive. ExtJS resolves callParent by reading Function.caller on the calling
+# method and V8 returns null for that when the caller is strict, so a strict
+# initComponent dies inside ext-all.js with "Cannot read properties of null
+# (reading 'apply')" — at runtime, in the browser, on the panel it belongs to.
+#
 # loader-runtime.js is checked in its unsubstituted form on purpose. The
 # placeholder is a quoted string, so the template parses as JavaScript before
 # Proxmod::Frontend rewrites it; if that ever stops being true the substitution
@@ -160,6 +166,14 @@ lint-js:
 	        [ -e "$$j" ] || continue; echo "node --check $$j"; node --check "$$j"; \
 	    done; \
 	fi
+	@set -e; for j in $(JS_FILES); do \
+	    [ -e "$$j" ] || continue; \
+	    grep -Eq "^[[:space:]]*['\"]use strict['\"];" "$$j" || continue; \
+	    grep -q "callParent\|callSuper" "$$j" || continue; \
+	    echo "$$j: 'use strict' breaks ExtJS callParent (Function.caller is null"; \
+	    echo "    for a strict caller); drop the directive from this file."; \
+	    exit 1; \
+	done
 
 ## deb: build the binary package into ../ and lint it.
 deb:

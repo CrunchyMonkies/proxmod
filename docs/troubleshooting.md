@@ -210,6 +210,23 @@ Ext.ClassManager.get('PVE.node.Config')   // does the target class exist?
 | `addTab needs an xtype` / `needs the registering extension id` | Fix the spec |
 | Nothing at all | Your file threw at parse time — check the Network tab, then `node --check` it |
 
+### The menu or panel breaks with `Cannot read properties of null`
+
+```
+Uncaught TypeError: Cannot read properties of null (reading 'apply')
+    at constructor.callParent (ext-all.js)
+    at constructor.initComponent (<your asset>.js)
+```
+
+`'use strict'` in the file holding that `initComponent`. ExtJS resolves
+`callParent` through `Function.caller`, and V8 hands out `null` for it whenever
+the caller is a strict-mode function, so the parent method is never found and
+the panel never builds. Drop the directive from the file — strictness is
+inherited by every nested function, so there is no narrower fix. proxmod's own
+`proxmod-ui.js` carried the directive through 0.2.0 and broke every panel an
+extension touched — upgrade past it, and make the same edit in any extension
+asset of your own.
+
 ### The tab appears but is empty
 
 Your `initComponent` ran and the API call failed. Console + Network tab.
