@@ -137,7 +137,10 @@ case "$cmd" in
         # -u twice: an extension that registers in pvedaemon and draws in
         # pveproxy logs to both, and reading them interleaved is the only way
         # the ordering makes sense.
-        journalctl -u pvedaemon -u pveproxy --no-pager "$@" | grep 'proxmod:' || {
+        # --line-buffered because `logs -f` is a follow: without it grep holds
+        # output back until it has 4 KiB of it, and a low-traffic host looks
+        # like it has hung.
+        journalctl -u pvedaemon -u pveproxy --no-pager "$@" | grep --line-buffered 'proxmod:' || {
             printf 'nothing from proxmod in the journal.\n' >&2
             printf 'if the daemons are running, that itself is the finding:\n' >&2
             printf 'run "proxmodctl status".\n' >&2
