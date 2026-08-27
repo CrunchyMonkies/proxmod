@@ -5,7 +5,7 @@ use warnings;
 
 use lib 't/lib', 'perl';
 
-use Test::More tests => 26;
+use Test::More tests => 27;
 use ProxmodTest qw(tempdir write_file capture_log repo_root);
 use File::Path ();
 use JSON::PP ();
@@ -311,6 +311,41 @@ subtest 'REGRESSION leaked-backup' => sub {
 
     my $state = JSON::PP->new->decode(slurp($h->{state}));
     is_deeply($state->{patches}, {}, 'no record left behind');
+};
+
+subtest 'REGRESSION corrupt-state-overwritten' => sub {
+    plan tests => 7;
+
+    # read_state() cannot tell "no patches yet" from "the record of every patch
+    # is unreadable": both hand back an empty hash. A caller that carried on
+    # would write a state file describing only this run, and the backup path
+    # and orig_sha256 of everything already applied would be gone — defect 2
+    # and defect 3 at once, from the module that exists to prevent them.
+    my $h = build_host();
+    write_file("$h->{pve}/Demo.pm", $STOCK);
+    write_file("$h->{pve}/Other.pm", $STOCK);
+    drop_spec($h, stock_spec($h));
+    capture_log(sub { Proxmod::Patch::converge() });
+    like(slurp($h->{state}), qr/"demo"/, 'the first patch is recorded');
+
+    drop_spec($h, stock_spec($h, id => 'demo2', target => "$h->{pve}/Other.pm"));
+    my ($spec2) = grep { $_->{id} eq 'demo2' } @{ Proxmod::Patch::load_specs() };
+
+    write_file($h->{state}, "{ this is not json\n");
+    my $corrupt = slurp($h->{state});
+
+    my ($r) = capture_log(sub { Proxmod::Patch::apply($spec2) });
+    is($r->{status}, 'error', 'apply refuses while the state file is unreadable');
+    is(slurp("$h->{pve}/Other.pm"), $STOCK, 'and leaves the target alone');
+    is(slurp($h->{state}), $corrupt, 'and leaves the state file for a human to look at');
+
+    my ($c) = capture_log(sub { Proxmod::Patch::converge() });
+    is($c->{failed}, 1, 'converge refuses too, rather than reapplying blind');
+
+    my ($ra) = capture_log(sub { Proxmod::Patch::revert_all() });
+    is($ra->{failed}, 1, 'so does revert-all, which would otherwise undo nothing and call it done');
+    ok(-f "$h->{backups}/demo.bak",
+        'the backup for the patch it can no longer see is still there to revert by hand');
 };
 
 subtest 'purge clears backups it could not revert' => sub {

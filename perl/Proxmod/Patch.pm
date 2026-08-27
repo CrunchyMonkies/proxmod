@@ -345,8 +345,36 @@ sub read_state {
     return { version => 1, patches => $raw->{patches} };
 }
 
+# The one question every writer has to ask first. read_state() hands back an
+# empty record set when it could not parse the file, and an empty record set is
+# indistinguishable from a stock host — so a caller that just carried on would
+# write a state file containing only whatever it did this run, discarding the
+# backup path and orig_sha256 of every patch already applied. revert() could
+# then neither restore those files nor clean up after them: defects 2 and 3
+# from the header, reintroduced by the module that exists to prevent them.
+#
+# So nothing writes over a state file it could not read. The patched files
+# still carry their proxmod:begin/end markers and can be unpatched by hand, and
+# the backups are still in $BACKUP_DIR, named after the ids they belong to.
+sub state_unusable {
+    my ($state) = @_;
+    return undef if !$state->{broken};
+    return "patch state at $STATE_FILE is unreadable, so proxmod does not know"
+        . " which patches it has already applied; refusing to patch or revert,"
+        . " because recording this run would discard those records. Repair or"
+        . " move aside $STATE_FILE first — the patched files still carry"
+        . " proxmod:begin/end markers and $BACKUP_DIR still holds the backups.";
+}
+
 sub write_state {
     my ($state) = @_;
+
+    # Belt and braces: every caller checks state_unusable() before it starts,
+    # but this is the line that would do the damage.
+    if (my $why = state_unusable($state)) {
+        log_error($why);
+        return 0;
+    }
 
     File::Path::make_path(File::Basename::dirname($STATE_FILE));
     my $json = JSON::PP->new->utf8->canonical->pretty
@@ -414,6 +442,14 @@ sub apply {
     my $id = $spec->{id};
     return { status => 'skipped', message => 'not enabled' } if !$spec->{enabled};
 
+    # Checked before the target is touched, not just before the state is
+    # written: a patched file with no record of the patch is worse than an
+    # unpatched one.
+    my $state = read_state();
+    if (my $why = state_unusable($state)) {
+        return { status => 'error', message => $why };
+    }
+
     my $info = _inspect_target($spec);
     return { status => 'error', message => $info->{error} } if $info->{error};
 
@@ -478,7 +514,6 @@ sub apply {
         return { status => 'error', message => "cannot write $spec->{target}" };
     }
 
-    my $state = read_state();
     $state->{patches}{$id} = {
         target         => $spec->{target},
         spec_source    => $spec->{source},
@@ -511,6 +546,9 @@ sub revert {
     my ($id) = @_;
 
     my $state = read_state();
+    if (my $why = state_unusable($state)) {
+        return { status => 'error', message => $why };
+    }
     my $entry = $state->{patches}{$id};
     return { status => 'absent', message => "no record of $id" } if !$entry;
 
@@ -597,6 +635,12 @@ sub converge {
     my $failed = 0;
 
     my $state = read_state();
+    if (my $why = state_unusable($state)) {
+        log_error($why);
+        return { results => [ { id => '-', status => 'error', message => $why } ],
+            failed => 1 };
+    }
+
     for my $id (sort keys %{ $state->{patches} }) {
         next if $by_id{$id} && $by_id{$id}{enabled};
         # Either the spec was disabled, or its file was removed — the packaged
@@ -625,6 +669,12 @@ sub converge {
 # newer one at the exact moment nobody was watching.
 sub revert_all {
     my $state = read_state();
+    if (my $why = state_unusable($state)) {
+        log_error($why);
+        return { results => [ { id => '-', status => 'error', message => $why } ],
+            failed => 1 };
+    }
+
     my @results;
     my $failed = 0;
     for my $id (sort keys %{ $state->{patches} }) {
