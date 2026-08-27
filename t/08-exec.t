@@ -5,7 +5,7 @@ use warnings;
 
 use lib 't/lib';
 
-use Test::More tests => 110;
+use Test::More tests => 120;
 use ProxmodTest qw(tempdir write_file repo_root);
 
 use File::Path ();
@@ -45,8 +45,18 @@ sub build_tree {
         "$p/usr/share/perl5/Proxmod",
         "$p/usr/share/proxmod/www",
         "$p/usr/share/proxmod/extensions.d",
+        "$p/usr/share/proxmod/patches",
         "$p/etc/proxmod/extensions.d",
+        "$p/etc/proxmod/patches",
     );
+
+    # A patch spec names a Proxmox file to rewrite and the text to write into
+    # it, which makes a spec anyone can edit worth exactly as much to an
+    # attacker as a registry anyone can edit. Both directories get a file so
+    # the guard is exercised on the specs and not only on the directories.
+    for my $d ("$p/usr/share/proxmod/patches", "$p/etc/proxmod/patches") {
+        write_file("$d/50-demo.conf", qq({ "id": "demo", "enabled": false }\n));
+    }
 
     # The real shim, not a stand-in: the load probe in the wrapper has to be
     # exercised against the module that will actually be injected.
@@ -254,6 +264,11 @@ for my $case (
     ['usr/share/proxmod/extensions.d',  0777, 'world-writable extension registry'],
     ['etc/proxmod',                     0775, 'group-writable configuration directory'],
     ['usr/lib/proxmod',                 0777, 'world-writable helper directory'],
+    # The specs, not just the directories holding them. find runs -maxdepth 1,
+    # so these pass only because both patch directories are named in
+    # GUARDED_PATHS in their own right.
+    ['usr/share/proxmod/patches/50-demo.conf', 0664, 'group-writable packaged patch spec'],
+    ['etc/proxmod/patches/50-demo.conf',       0666, 'world-writable admin patch spec'],
 ) {
     my ($rel, $mode, $label) = @$case;
 

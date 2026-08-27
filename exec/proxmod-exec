@@ -44,6 +44,13 @@ DISABLED="$prefix/etc/proxmod/disabled"
 # code execution on the host, so the wrapper refuses to inject when it finds one
 # — the extension disappears, the daemon starts clean, and the reason is in the
 # journal.
+#
+# Every directory whose *contents* matter has to be named in its own right: the
+# find below runs -maxdepth 1, so listing a directory checks that directory and
+# the files directly inside it, and nothing deeper. A parent entry is not enough
+# — /etc/proxmod being safe says nothing about the files in
+# /etc/proxmod/patches, and a spec file there names a Proxmox .pm to rewrite,
+# which is root code execution one convergence run later.
 GUARDED_PATHS="
 $prefix/usr/share/perl5/Proxmod.pm
 $prefix/usr/share/perl5/Proxmod
@@ -51,8 +58,10 @@ $prefix/usr/lib/proxmod
 $prefix/usr/share/proxmod
 $prefix/usr/share/proxmod/www
 $prefix/usr/share/proxmod/extensions.d
+$prefix/usr/share/proxmod/patches
 $prefix/etc/proxmod
 $prefix/etc/proxmod/extensions.d
+$prefix/etc/proxmod/patches
 "
 
 dry_run=0
