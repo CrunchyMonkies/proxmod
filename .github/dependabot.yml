@@ -1,0 +1,28 @@
+# proxmod pins its third-party actions by commit SHA, which is right and which
+# also means nothing tells anyone when one has moved on. This is that.
+#
+# The base image is the other half. `debian:trixie` in ci.yml and release.yml is
+# a moving tag, so the package that ships is built against whatever trixie was
+# on the day of the tag — and drift in it currently surfaces as an unrelated PR
+# failing for reasons its author did not cause. A dependabot PR that changes the
+# digest and goes red is the same information, arriving attached to its cause.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # A SHA pin and its `# v4.4.0` comment are one fact in two places;
+    # dependabot updates both, which is why the comment is worth keeping.
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build
+      include: scope

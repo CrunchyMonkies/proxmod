@@ -160,10 +160,24 @@ lint-perl:
 	    perl -T -Iperl -It/lib -c "$$m" || exit 1; \
 	done
 
+# LINT_STRICT turns a missing linter into a failure instead of a skip.
+#
+# The skips exist so that `make lint` is useful on a machine that has perl and
+# nothing else, and that is worth keeping. But they mean a green `make lint`
+# proves only that whatever happened to be installed had no complaints — and
+# nobody reads two lines of "skipping" as "two thirds of the lint did not run".
+# CI and the release workflow set LINT_STRICT=1 so the gate is a gate there,
+# where the answer is load-bearing.
+LINT_STRICT ?=
+
 # Each recipe line is its own shell, so the "skip" case has to be one
 # conditional rather than a guard line followed by the loop.
 lint-shell:
 	@if ! command -v shellcheck >/dev/null 2>&1; then \
+	    if [ -n "$(LINT_STRICT)" ]; then \
+	        echo "shellcheck is not installed and LINT_STRICT is set (apt install shellcheck)" >&2; \
+	        exit 1; \
+	    fi; \
 	    echo "shellcheck not installed; skipping (apt install shellcheck)"; \
 	else \
 	    set -e; for s in $(SHELL_FILES); do \
@@ -187,6 +201,10 @@ lint-shell:
 # is no longer a safe textual one.
 lint-js:
 	@if ! command -v node >/dev/null 2>&1; then \
+	    if [ -n "$(LINT_STRICT)" ]; then \
+	        echo "node is not installed and LINT_STRICT is set (apt install nodejs)" >&2; \
+	        exit 1; \
+	    fi; \
 	    echo "node not installed; skipping JS syntax check"; \
 	else \
 	    set -e; for j in $(JS_FILES); do \
@@ -203,12 +221,37 @@ lint-js:
 	done
 
 ## deb: build the binary package into ../ and lint it.
+#
+# lintian is a gate, not a comment. It used to end in `|| true` on the argument
+# that a failing gate nobody can satisfy gets disabled rather than fixed — which
+# is true, and the answer to it is to satisfy the gate. The package is clean as
+# of 0.2.1; when a tag appears that genuinely does not apply here, override it in
+# debian/proxmod.lintian-overrides with a comment saying why, so the next reader
+# can disagree with the specific decision instead of with a blanket exemption.
+#
+# --fail-on error,warning: informational and pedantic tags are advice, and the
+# ones that survive a build here are usually about the archive, not the package.
+#
+# The argument names one file, built from the changelog version, and is not a
+# glob. ../ accumulates every version ever built in this checkout, and
+# `../$(PACKAGE)_*_all.deb` hands lintian all of them — so the gate reports
+# findings that were fixed releases ago, fails a package that is clean, and
+# invites the next person to delete old artifacts to make it pass. The same
+# mistake is already written up for the example package further down.
+#
+# The skip below honours LINT_STRICT for the same reason lint-shell does: on a
+# developer's machine "no lintian here" is a fair answer, and on the release
+# path it is the gate not running. ci.yml and release.yml set it.
 deb:
 	dpkg-buildpackage -us -uc -b
-	@if command -v lintian >/dev/null 2>&1; then \
-	    lintian ../$(PACKAGE)_*_all.deb || true; \
-	else \
+	@if ! command -v lintian >/dev/null 2>&1; then \
+	    if [ -n "$(LINT_STRICT)" ]; then \
+	        echo "lintian is not installed and LINT_STRICT is set (apt install lintian)" >&2; \
+	        exit 1; \
+	    fi; \
 	    echo "lintian not installed; skipping (apt install lintian)"; \
+	else \
+	    lintian --fail-on error,warning ../$(PACKAGE)_$$(dpkg-parsechangelog -S Version)_all.deb; \
 	fi
 
 ## e2e: full QEMU integration run. Needs PROXMOD_PVE_IMAGE / PROXMOD_PVE_ISO.
@@ -234,10 +277,23 @@ facts-src:
 	@[ -d $(THIRD_PARTY)/pve-manager/www ] || $(MAKE) submodules
 	./scripts/harvest-pve-src.sh docs/facts
 
+# The example is built by CI and by hand often enough that its artifacts
+# accumulate here, and a stale .deb is worse than an untidy tree: `lintian
+# examples/*_all.deb` picks up every version ever built in this checkout and
+# reports findings that were fixed releases ago.
+EX_DIR := examples/proxmod-example-hello
+
 clean:
 	rm -rf build
 	rm -rf debian/$(PACKAGE) debian/.debhelper debian/files debian/*.substvars \
-	       debian/debhelper-build-stamp
+	       debian/debhelper-build-stamp debian/*.debhelper debian/*.debhelper.log
+	rm -rf $(EX_DIR)/debian/proxmod-example-hello $(EX_DIR)/debian/.debhelper \
+	       $(EX_DIR)/debian/files $(EX_DIR)/debian/*.substvars \
+	       $(EX_DIR)/debian/debhelper-build-stamp $(EX_DIR)/debian/*.debhelper \
+	       $(EX_DIR)/debian/*.debhelper.log
+	rm -f examples/proxmod-example-hello_*.deb \
+	      examples/proxmod-example-hello_*.buildinfo \
+	      examples/proxmod-example-hello_*.changes
 
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## //'

@@ -1,32 +1,53 @@
 name: release
 
-# Publishes the .deb packages built by ci.yml's "package" job to a GitHub
-# Release whenever a version tag is pushed. Kept separate from ci.yml rather
-# than gated behind it, because a release should never depend on a workflow
-# whose trigger (push to main) may or may not have run for the exact commit
-# being tagged.
+# Builds and publishes the .deb packages to a GitHub Release whenever a version
+# tag is pushed. Kept separate from ci.yml rather than gated behind it, because
+# a release should never depend on a workflow whose trigger (push to main) may
+# or may not have run for the exact commit being tagged.
+#
+# Which is a reason to run the tests HERE, not a reason to skip them. This
+# workflow is the only thing standing between a tag and a package on somebody's
+# hypervisor, and a tag can be pushed from any branch, or from a commit that
+# main never saw. The same tests ci.yml runs, run again against the exact tree
+# being shipped, cost two minutes and are the difference between "we tested the
+# code that became this release" and "we tested something".
 
 on:
   push:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: write
+# Third-party actions are pinned by commit SHA, with the version they were at in
+# a comment beside them. A tag is a mutable pointer in somebody else's
+# repository: whoever controls it can move it, and this workflow runs with
+# write scopes on a job triggered by a tag push. The comment is what makes the
+# pin reviewable — a bare 40-character hash tells a reader nothing about whether
+# it is current, and dependabot updates both halves together.
+#
+# Nothing is granted here. Each job asks for the one scope it needs, so the job
+# that runs the test suite, dpkg-buildpackage and lintian — thousands of lines
+# of other people's code — never holds a token that can write to the package
+# registry, and the job that can never runs any of it.
+
+permissions: {}
 
 jobs:
   release:
     name: build and publish release
     runs-on: ubuntu-latest
     container: debian:trixie
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: install build dependencies
+      - name: install build and test dependencies
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential debhelper devscripts perl fakeroot
+            build-essential debhelper devscripts perl fakeroot make \
+            libtest-simple-perl libjson-perl libhttp-message-perl \
+            shellcheck nodejs lintian curl ca-certificates
           useradd -m ci
           chown -R ci:ci .
           chown ci:ci ..
@@ -44,6 +65,76 @@ jobs:
             exit 1
           fi
 
+      # The QEMU suite is the only thing that tests the claims proxmod is
+      # actually sold on — that it modifies no Proxmox file, that a patch
+      # survives a pve-manager upgrade, that purge leaves the host as it found
+      # it. None of them can be made against t/lib stubs, and none of them run
+      # on this path: e2e.yml is workflow_dispatch on a self-hosted runner with
+      # KVM and a 5GB image, and docs/testing.md §6 defends that well.
+      #
+      # So the tag has to say it happened. This checks that the annotated tag
+      # message carries an `E2E:` line and nothing more — it cannot verify the
+      # run, and it is not trying to. It is aimed at the failure that actually
+      # occurs, which is not somebody lying about the QEMU suite but somebody
+      # tagging on a Friday having genuinely forgotten it exists. The line ends
+      # up on the release page next to the packages, where a person deciding
+      # whether to install this can read it.
+      #
+      #   E2E: https://github.com/…/actions/runs/1234567890 (PVE 9.1.1, all green)
+      #   E2E: none — docs-only release, no code path changed
+      #
+      # Read over the API because there is no .git here: git is not in the
+      # image at checkout time, so actions/checkout falls back to a tarball.
+      - name: the tag records an e2e decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+          auth="authorization: Bearer $GH_TOKEN"
+          get() { curl -sfL -H "$auth" -H 'accept: application/vnd.github+json' "$1"; }
+
+          obj=$(get "$api/git/ref/tags/${GITHUB_REF_NAME}" \
+                | perl -MJSON::PP -0777 -ne 'my $o = decode_json($_)->{object}; print "$o->{type} $o->{sha}"')
+          type=${obj%% *}
+          sha=${obj#* }
+
+          if [ "$type" != tag ]; then
+            echo "v${GITHUB_REF_NAME#v} is a lightweight tag." >&2
+            echo "Release tags are annotated, and the message is where the release" >&2
+            echo "records its end-to-end evidence. See docs/packaging.md section 10." >&2
+            exit 1
+          fi
+
+          message=$(get "$api/git/tags/$sha" \
+                    | perl -MJSON::PP -0777 -ne 'print decode_json($_)->{message} // ""')
+          if ! printf '%s\n' "$message" | grep -qE '^E2E: *[^ ]'; then
+            echo "The tag message has no 'E2E:' line." >&2
+            echo "Add one naming the QEMU suite run this release was cut from, or" >&2
+            echo "saying why there is none. See docs/packaging.md section 10." >&2
+            echo "--- tag message ---" >&2
+            printf '%s\n' "$message" >&2
+            exit 1
+          fi
+          printf '%s\n' "$message" | grep -E '^E2E: '
+
+      # The gate. Identical to ci.yml's two jobs, deliberately: this is not a
+      # lighter smoke test for the release path, it is the same test suite
+      # against the tree that is about to be published.
+      #
+      # LINT_STRICT because a linter that is not installed prints "skipping"
+      # and exits 0, and a release must not be able to pass a lint that never
+      # ran. The apt line above installs both; this is what notices when it
+      # stops doing so.
+      - name: make lint
+        run: LINT_STRICT=1 make lint
+
+      # As a real non-root user: PROXMOD_TEST_PREFIX is honoured only when the
+      # effective UID is not 0, by design, so root would silently run t/07-10
+      # against production paths instead of a disposable tree.
+      - name: prove -r t/
+        run: su ci -c 'umask 022 && prove -r t/'
+
       # Rules-Requires-Root: no in debian/control means this package is built
       # by a non-root user, with fakeroot faking root only where dpkg needs it.
       - name: dpkg-buildpackage
@@ -51,6 +142,12 @@ jobs:
 
       - name: build the example extension
         run: su ci -c 'cd examples/proxmod-example-hello && dpkg-buildpackage -us -uc -b'
+
+      # The same gate ci.yml applies, on the artifacts actually being published.
+      - name: lintian
+        run: |
+          lintian --fail-on error,warning ../proxmod_*_all.deb
+          lintian --fail-on error,warning examples/proxmod-example-hello_*_all.deb
 
       # actions/upload-artifact and softprops/action-gh-release both reject
       # glob patterns containing a '..' segment, and dpkg-buildpackage always
@@ -61,7 +158,124 @@ jobs:
           mkdir -p dist
           cp ../proxmod_*_all.deb examples/proxmod-example-hello_*_all.deb dist/
 
-      - uses: softprops/action-gh-release@v2
+      # The release body is the changelog entry, not generated notes.
+      #
+      # generate_release_notes: true synthesises a list of commit subjects, and
+      # a commit subject is fifty characters written for somebody reading `git
+      # log`. debian/changelog is written for the administrator deciding whether
+      # to install this on a hypervisor: it names the failure, the mechanism and
+      # what changed as a result. That is the audience a release page has, and
+      # the prose already exists — throwing it away to auto-generate something
+      # worse is the one thing worth not doing here.
+      #
+      # It is also the same text `apt changelog proxmod` shows, so the release
+      # page and the package agree by construction rather than by diligence.
+      - name: release notes from debian/changelog
+        run: |
+          set -eu
+          {
+            awk 'NR==1 {next} /^ -- / {exit} {print}' debian/changelog \
+              | sed -e 's/^  //' -e '/./,$!d'
+            echo
+            echo '---'
+            echo
+            echo '```sh'
+            echo '# on a Proxmox VE 9.x host'
+            echo 'apt install ./proxmod_*_all.deb'
+            echo '```'
+            echo
+            echo "Also published as an OCI artifact, same bytes, same build:"
+            echo '```sh'
+            # Lowercased for the same reason the push step does it: GHCR
+            # rejects an uppercase path component, and an install line that
+            # cannot be pasted is worse than no install line.
+            echo "oras pull $(printf 'ghcr.io/%s' "$REPO" | tr '[:upper:]' '[:lower:]'):${GITHUB_REF_NAME#v}"
+            echo '```'
+          } > dist/RELEASE_NOTES.md
+          cat dist/RELEASE_NOTES.md
+        env:
+          REPO: ${{ github.repository }}
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*_all.deb
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
+
+      # Handed to the publish job rather than rebuilt there. Building twice
+      # would mean publishing two artifacts that are only probably identical,
+      # and the GitHub Release and the GHCR copy have to be the same bytes or
+      # the checksum in a bug report tells nobody anything.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-debs
+          path: dist/*_all.deb
+          if-no-files-found: error
+
+  # A second distribution channel, for the case the GitHub Releases API is the
+  # thing that is down, and because `oras pull` against an immutable digest is a
+  # better fit for a config-managed fleet than a redirect chain to a mutable
+  # `latest` release. Same bytes, from the same build.
+  publish-oci:
+    name: publish to ghcr.io
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-debs
+          path: dist
+
+      # oras is pinned to a version AND to the sha256 of the exact tarball, and
+      # the checksum lives here rather than being fetched alongside the download.
+      # A checksum served by the host serving the file proves only that the
+      # transfer completed; this proves it is the same file a human verified when
+      # they wrote the line. That matters more than usual for this binary, since
+      # the next thing it touches is the registry credential.
+      #
+      # To bump: read oras_<v>_checksums.txt from the release, put the
+      # linux_amd64 line here, and say in the commit that you checked it.
+      - name: install oras
+        env:
+          ORAS_VERSION: 1.3.3
+          ORAS_SHA256: 9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59
+        run: |
+          set -eu
+          url="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o /tmp/oras.tar.gz "$url"
+          echo "${ORAS_SHA256}  /tmp/oras.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/oras.tar.gz -C /tmp oras
+          sudo install -m 0755 /tmp/oras /usr/local/bin/oras
+          oras version
+
+      - name: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          # GHCR rejects an uppercase path component and github.repository
+          # preserves whatever case the repository was created with.
+          ref=$(printf 'ghcr.io/%s' "$REPO" | tr '[:upper:]' '[:lower:]')
+
+          oras login ghcr.io -u "${{ github.actor }}" --password-stdin <<< "$GH_TOKEN"
+
+          cd dist
+          files=()
+          for f in *_all.deb; do
+            files+=("$f:application/vnd.debian.binary-package")
+          done
+
+          # Tagged with the version only. No `latest`: a mutable tag on a
+          # hypervisor package is an invitation to install a major version bump
+          # by accident, and the GitHub Release already answers "what is newest"
+          # for a human. Machines should name the version they tested against.
+          oras push "$ref:$version" \
+            --artifact-type application/vnd.proxmod.release.v1 \
+            --annotation "org.opencontainers.image.source=${{ github.server_url }}/${REPO}" \
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "org.opencontainers.image.version=$version" \
+            --annotation "org.opencontainers.image.licenses=AGPL-3.0-or-later" \
+            "${files[@]}"

@@ -419,6 +419,52 @@ them by hand anyway the first time you package something.
 
 ---
 
+## 10. Cutting a release
+
+The unit suite runs on every push and again on the tag. It cannot make the
+claims proxmod is sold on — no Proxmox file modified, a patch surviving a
+`pve-manager` upgrade, purge leaving the host as it found it — because those are
+claims about a live hypervisor and `t/lib` is a set of stubs. Only the QEMU
+suite makes them, and it does not run on the release path: it needs KVM, a 5GB
+image and an installer ISO, which [`testing.md`](testing.md) §6 explains and
+this section does not relitigate.
+
+What follows from that is not "run it in CI". It is that **the release has to
+say whether it was run**, in a place a person deciding whether to install this
+will see.
+
+1. Bump `$VERSION` everywhere and `debian/changelog`. `prove t/11-conventions.t`
+   is what tells you whether you got all of them.
+2. `make lint && make test`, then `make deb && lintian ../proxmod_*_all.deb`.
+3. `make e2e` on a PVE 9.x VM. Keep `test/qemu/.run/artifacts/`, or note the
+   `e2e.yml` run.
+4. Commit as `release: X.Y.Z`, with the semver class and what the bump touched
+   — [`conventions.md`](conventions.md) §7.
+5. Tag **annotated**, with the changelog summary and an `E2E:` line:
+
+   ```text
+   E2E: https://github.com/CrunchyMonkies/proxmod/actions/runs/… (PVE 9.1.1, all green)
+   E2E: none — docs-only release, no code path changed
+   ```
+
+   `release.yml` refuses to publish a tag without one, and refuses a lightweight
+   tag outright. It cannot check that the run happened and does not pretend to;
+   the failure it is aimed at is tagging on a Friday having forgotten the suite
+   exists. Either spelling passes — recording the decision is the point, and
+   "none, because…" is a decision.
+6. Push the commit, then the tag. `release.yml` re-runs lint and the unit suite
+   against the exact tree, builds both packages, gates them on `lintian`,
+   publishes the GitHub Release with the changelog entry as its body, and pushes
+   the same bytes to `ghcr.io` from a second job that holds `packages: write`
+   and nothing else.
+
+**Before the 1.0 tag**, additionally: give the `publish-oci` job a GitHub
+Environment with required reviewers. Nothing in this repository can configure
+that, and an unconfigured environment protects nothing silently — which is why
+it is written here rather than half-applied in the workflow.
+
+---
+
 ## Reference
 
 - [`examples/proxmod-example-hello/`](../examples/proxmod-example-hello/) — the whole extension shape, buildable

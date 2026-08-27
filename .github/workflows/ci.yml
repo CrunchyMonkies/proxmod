@@ -16,13 +16,26 @@ on:
 permissions:
   contents: read
 
+# One run per ref. Two pushes to a branch in quick succession currently race:
+# both jobs build a .deb, both upload an artifact called `debs`, and which one
+# survives is a matter of timing — so a green tick can belong to a commit that
+# is no longer at the head. Superseding rather than queueing, because the only
+# question CI answers is about the newest commit.
+#
+# main is exempt from cancellation: its runs are the record of what was true at
+# each commit that landed, and a cancelled run there reads as a failure nobody
+# can reproduce.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     name: unit tests
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: install test dependencies
         run: |
@@ -49,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: install linters
         run: |
@@ -60,15 +73,21 @@ jobs:
       # shellcheck matters more here than in most projects: proxmod's shell
       # runs as root, out of systemd and dpkg triggers, at the moment the
       # package is least able to report a problem.
+      #
+      # LINT_STRICT because lint-shell and half of lint-js print "skipping" and
+      # exit 0 when their tool is missing. That is right for a developer with
+      # only perl installed and wrong for a gate: without it, dropping
+      # `shellcheck` from the apt line above would turn this job green and
+      # nobody would notice for months.
       - name: make lint
-        run: make lint
+        run: LINT_STRICT=1 make lint
 
   package:
     name: build the package
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: install build dependencies
         run: |
@@ -88,11 +107,19 @@ jobs:
       - name: build the example extension
         run: su ci -c 'cd examples/proxmod-example-hello && dpkg-buildpackage -us -uc -b'
 
-      # Informational. lintian on a package that installs systemd drop-ins into
-      # /etc and ships scripts in /usr/lib has opinions that do not all apply,
-      # and a failing gate nobody can satisfy gets disabled rather than fixed.
+      # A gate. This used to end in `|| true`, on the argument that a failing
+      # gate nobody can satisfy gets disabled rather than fixed — true, and the
+      # answer to it is to satisfy the gate, which both packages now do. When a
+      # tag turns up that genuinely does not apply here, override it in
+      # debian/proxmod.lintian-overrides with a comment saying why, so the next
+      # reader argues with one decision rather than with a blanket exemption.
+      #
+      # The example is linted too: it is the package every extension author
+      # copies, so a finding there propagates.
       - name: lintian
-        run: lintian ../proxmod_*_all.deb || true
+        run: |
+          lintian --fail-on error,warning ../proxmod_*_all.deb
+          lintian --fail-on error,warning examples/proxmod-example-hello_*_all.deb
 
       # The claim in the documentation is that an extension package needs no
       # maintainer scripts at all. If that ever stops being true, the contract
@@ -112,6 +139,65 @@ jobs:
           fi
           echo "ok: no maintainer scripts"
 
+      # docs/testing.md §2 and docs/packaging.md §9 both end in a checklist
+      # that can only be run against a built package, which is why they have
+      # been prose up to now. They are here instead. Everything in those lists
+      # that can be checked from the source tree already is — the /etc/pve
+      # prohibition is t/09-reapply.t, the maintainer-script rule is the step
+      # above — so what is left is what needs the .deb in hand.
+      - name: the built packages match what the docs promise
+        run: |
+          set -eu
+          deb=$(ls ../proxmod_*_all.deb | head -1)
+          ex=$(ls examples/proxmod-example-hello_*_all.deb | head -1)
+          fail=0
+          say() { echo "FAIL: $*" >&2; fail=1; }
+
+          # docs/third_party/ is eight upstream repositories, vendored as
+          # submodules so that a [PVE-F-nnn] fact can be re-derived from source.
+          # debian/source/options keeps them out of the source package and
+          # nothing installs them — but the day something does, it is tens of
+          # megabytes of somebody else's code shipped to every PVE host under
+          # proxmod's name and licence.
+          if dpkg-deb -c "$deb" | grep -q third_party; then
+            say "third_party is inside the package"
+          fi
+
+          # The runtime dependency floor. Each of these is imported by a module
+          # that runs inside pvedaemon; a missing one is a daemon that dies on
+          # `use`, which is the failure the prime directive exists to prevent.
+          # libhttp-message-perl in particular is satisfied transitively today,
+          # which is exactly why dropping it would go unnoticed until it didn't.
+          depends=$(dpkg-deb -f "$deb" Depends)
+          for d in pve-manager libpve-http-server-perl libhttp-message-perl systemd; do
+            case ",$depends," in *"$d"*) ;; *) say "framework Depends lost $d" ;; esac
+          done
+
+          # The extension contract, as docs/packaging.md §9 states it: three
+          # installed paths, none owned by Proxmox. This is the shape every
+          # extension author copies, and the second half is the whole safety
+          # argument — an extension that writes into /usr/share/pve-manager is
+          # doing the thing proxmod was written to stop people doing.
+          paths=$(dpkg-deb -c "$ex" | awk '$1 !~ /^d/ {print $6}' | grep -v '^./usr/share/doc/' || true)
+          n=$(printf '%s\n' "$paths" | grep -c . || true)
+          [ "$n" -eq 3 ] || { say "the example installs $n paths, not three"; echo "$paths" >&2; }
+          case "$paths" in
+            *"/usr/share/pve-manager"*|*"/usr/share/perl5/PVE/"*|*"/etc/pve"*|*"proxmox-widget-toolkit"*)
+              say "the example installs into a Proxmox-owned path"; echo "$paths" >&2 ;;
+          esac
+
+          # And it depends on proxmod with a floor, on nothing from pve-manager.
+          # An extension that pins a pve-manager version inherits proxmod's
+          # compatibility problem without inheriting any of its handling of it.
+          exdep=$(dpkg-deb -f "$ex" Depends)
+          case "$exdep" in *"proxmod (>= "*) ;; *) say "the example does not depend on a proxmod version: $exdep" ;; esac
+          case "$exdep" in *pve-manager*) say "the example depends on pve-manager: $exdep" ;; esac
+
+          if [ "$fail" -eq 0 ]; then
+            echo "ok: both packages match the documented shape"
+          fi
+          exit "$fail"
+
       # actions/upload-artifact rejects glob patterns containing a '..'
       # segment outright, and dpkg-buildpackage always puts its .deb one
       # directory above the source tree it built from — so the artifact has
@@ -121,7 +207,7 @@ jobs:
           mkdir -p dist
           cp ../proxmod_*_all.deb examples/proxmod-example-hello_*_all.deb dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: debs
           path: dist/*_all.deb

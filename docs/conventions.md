@@ -197,6 +197,14 @@ not silently change the meaning of a manifest field or an installed path.
 A `!!` line in the harvest means the script could not find what it expected —
 that seam moved, and every claim citing it needs re-reading.
 
+Nobody has to remember to look. `.github/workflows/facts.yml` runs the source
+harvest monthly against upstream's current branch heads rather than the pins in
+`.gitmodules`, and files an issue when a `!!` line appears. It is deliberately
+the source harvest and not `make facts`: the ISO harvest is the authority when
+the two disagree, but it needs an installer ISO no hosted runner has, and the
+half that can be automated is the half that catches this months earlier than a
+maintainer would.
+
 ---
 
 ## Reference

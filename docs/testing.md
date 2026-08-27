@@ -204,6 +204,31 @@ tagging a release, and after any change to `proxmod-exec`, the drop-ins, the
 maintainer scripts, or `proxmod-reapply` — the four places where a defect is
 invisible to `prove`.
 
+`release.yml` will not publish a tag whose message lacks an `E2E:` line, which
+is how "run it before tagging" stops being a thing to remember. It records the
+decision; it cannot verify the run. [`packaging.md`](packaging.md) §10.
+
+`.github/workflows/facts.yml` runs the source fact harvest monthly against
+upstream's branch heads and files an issue when a seam a `[PVE-F-nnn]` entry
+depends on has moved. It tests nothing — it is the thing that tells you a
+document has quietly become false. [`conventions.md`](conventions.md) §8.
+
+## 7. What none of this covers
+
+Worth saying plainly, because a suite this size reads as more complete than it
+is:
+
+- **Clusters.** Every integration test is single-node. proxmod holds no
+  cluster-wide state, which is why that is defensible rather than merely cheap,
+  but "defensible" is not "tested" —
+  [`compatibility.md`](compatibility.md) §8 states exactly what is and is not
+  claimed, and on what evidence.
+- **Proxmox VE 8.** Not supported, not harvested, not probed.
+- **Real browsers.** `lint-js` parses the frontend assets and `t/06-frontend.t`
+  asserts over what this repo ships; neither loads ExtJS. The 0.2.1 strict-mode
+  defect got through both, and what caught it was a person opening the web
+  interface.
+
 ---
 
 ## See also

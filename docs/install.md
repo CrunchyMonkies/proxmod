@@ -21,9 +21,34 @@ the maintainer scripts, tested in `t/09-reapply.t` and the QEMU suite
 
 ## 2. Install
 
+Both packages are attached to every [GitHub
+release](https://github.com/CrunchyMonkies/proxmod/releases). Download the two
+`.deb` files, then:
+
 ```sh
 apt install ./proxmod_0.2.1_all.deb
 ```
+
+<details>
+<summary>Or pull them from a registry instead</summary>
+
+The same two files, from the same build, are published as an OCI artifact,
+tagged with the release version:
+
+```sh
+oras pull ghcr.io/crunchymonkies/proxmod:<version>
+```
+
+There is deliberately no `latest` tag, which is why that placeholder is not
+filled in here. Name the version you tested against — a mutable tag pointing at
+a package that restarts `pvedaemon` is a way to install a major version by
+accident, and the release page is the right place to learn what is newest.
+
+`oras` is not required to install proxmod. This exists for fleets that already
+resolve artifacts by digest, and for the days the Releases API is the thing that
+is down.
+
+</details>
 
 Then, in order:
 

@@ -1,0 +1,167 @@
+name: facts
+
+# Seam drift. This is the early-warning system for the one class of breakage
+# proxmod cannot see coming any other way.
+#
+# docs/pve-facts.md records every claim proxmod makes about a Proxmox internal
+# it attaches to, each with a file, a line range and a pinned commit. Those are
+# not API. Upstream owes us nothing and moves them without notice, and when one
+# moves the failure does not look like a failure: the unit tests pass (they run
+# against t/lib stubs), the package builds, lintian is quiet, and the only thing
+# that is wrong is a sentence in a document that is now false. It stays false
+# until somebody upgrades a real host and something stops working.
+#
+# scripts/harvest-pve-src.sh prints `!! NOT FOUND` when a pattern behind a fact
+# has gone. docs/conventions.md §8 already says what that means — "that seam
+# moved, and every claim citing it needs re-reading". What was missing was
+# anything that runs it. Until now the signal depended entirely on a maintainer
+# remembering to re-harvest after each PVE point release, which is another way
+# of saying it depended on nothing.
+#
+# So: monthly, against upstream's current branch heads rather than the pins in
+# .gitmodules, and it files an issue when a seam has moved. `make facts` (the
+# ISO harvest) is the authority when the two disagree, but it needs an installer
+# ISO that a hosted runner does not have — and the source harvest is the half
+# that can be automated, so it is the half that is.
+
+on:
+  schedule:
+    # 06:00 UTC on the 3rd. Monthly because Proxmox point releases are roughly
+    # that cadence and a seam that moved this morning is not more urgent than
+    # one that moved three weeks ago — nothing is deployed off this. Not the
+    # 1st: a cron on the 1st competes with everyone else's cron on the 1st.
+    - cron: '0 6 3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # To file the drift report. A red X on a scheduled job is the wrong shape for
+  # this: nobody watches the Actions tab of a repository whose scheduled job is
+  # usually green, and a failure there carries no evidence with it. An issue
+  # arrives, holds the `!!` lines and the commits that moved, and stays open
+  # until somebody has actually re-read the citing sentences.
+  issues: write
+
+concurrency:
+  group: facts
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: harvest against upstream HEAD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Deliberately NOT `make submodules`. That target checks out the recorded
+      # SHAs, which is right for reproducing a fact and useless for detecting
+      # drift — harvesting against the pin can only ever agree with the pin.
+      # `--remote` takes each mirror's current branch head instead, which is the
+      # whole question this job asks.
+      - name: fetch upstream at current branch heads
+        run: git submodule update --init --depth 1 --remote docs/third_party
+
+      - name: harvest
+        run: |
+          set -eu
+          mkdir -p /tmp/harvest
+          ./scripts/harvest-pve-src.sh /tmp/harvest
+
+      - name: compare against the ledger
+        id: compare
+        run: |
+          set -eu
+          new=/tmp/harvest/pve-src.txt
+
+          # The `!!` lines are the signal. A body diff is not: every commit
+          # upstream shifts the line numbers in a `grep -n` block, so the two
+          # files differ on almost every run for reasons that mean nothing.
+          # What means something is a pattern that no longer matches anything.
+          if grep -n '^!! ' "$new" > /tmp/harvest/moved.txt; then
+            echo "moved=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "moved=0" >> "$GITHUB_OUTPUT"
+            : > /tmp/harvest/moved.txt
+          fi
+
+          # The pins that produced this harvest, so the report says what it was
+          # run against and the next person can check out the same tree.
+          sed -n '/^# Pinned commits/,/^#$/p' "$new" > /tmp/harvest/pins.txt
+
+          {
+            echo "### seam harvest"
+            echo
+            if [ -s /tmp/harvest/moved.txt ]; then
+              echo "\`!!\` lines: **$(wc -l < /tmp/harvest/moved.txt)**"
+              echo
+              echo '```'
+              cat /tmp/harvest/moved.txt
+              echo '```'
+            else
+              echo "No \`!!\` lines. Every pattern behind a fact still matches at upstream HEAD."
+            fi
+            echo
+            echo '```'
+            cat /tmp/harvest/pins.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Kept whether or not anything moved. When something did, this is what a
+      # maintainer diffs against docs/facts/pve-src.txt; when nothing did, it is
+      # a dated record that the seams were where we say they are.
+      - name: keep the harvest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pve-src-harvest
+          path: /tmp/harvest/
+
+      - name: file the drift report
+        if: steps.compare.outputs.moved == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          title='PVE seam drift: a fact no longer matches upstream'
+
+          {
+            echo "\`scripts/harvest-pve-src.sh\` could not find something a"
+            echo "\`[PVE-F-nnn]\` entry in \`docs/pve-facts.md\` says is there."
+            echo "Per \`docs/conventions.md\` §8, that seam moved and every claim"
+            echo "citing it needs re-reading — the code may still work, but a"
+            echo "document is now stating something false about Proxmox."
+            echo
+            echo '```'
+            cat /tmp/harvest/moved.txt
+            echo '```'
+            echo
+            echo "Harvested against upstream branch heads, not the pins in"
+            echo "\`.gitmodules\`:"
+            echo
+            echo '```'
+            cat /tmp/harvest/pins.txt
+            echo '```'
+            echo
+            echo "What to do:"
+            echo
+            echo "1. Find where the seam went, and read every sentence citing that fact."
+            echo "2. Re-verify with \`make facts ISO=…\` — the ISO harvest is the"
+            echo "   authority when it and the source harvest disagree, because a fact"
+            echo "   is about the machine proxmod runs on, not about upstream master."
+            echo "3. Update \`docs/pve-facts.md\`, the citing documents, and the"
+            echo "   submodule pin together."
+            echo
+            echo "Full harvest is attached to $RUN as \`pve-src-harvest\`."
+          } > /tmp/harvest/body.md
+
+          # One issue, reopened and re-commented rather than duplicated. Drift
+          # accumulates: a seam that moved last month and is still unaddressed
+          # this month is the same piece of work, and a second issue saying so
+          # makes it easier to ignore, not harder.
+          existing=$(gh issue list --state open --search "$title in:title" \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file /tmp/harvest/body.md
+          else
+            gh issue create --title "$title" --body-file /tmp/harvest/body.md
+          fi
