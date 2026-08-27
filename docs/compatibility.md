@@ -146,7 +146,99 @@ Within proxmod, the promise for 0.x:
 Before 1.0, a minor release may change internals. It will not silently change
 the meaning of a manifest field or an installed path.
 
-## 8. Proxmox VE 8 and earlier
+## 8. Clusters
+
+proxmod is per-node, in the same sense `pveproxy` is per-node. There is no
+cluster-wide state, no leader, and no coordination between nodes. Installing it
+on one node of a five-node cluster gives you proxmod on one node.
+
+**It does not need quorum, and never will.** Nothing proxmod ships reads or
+writes anywhere under `/etc/pve` — `Proxmod::Patch` refuses the path outright
+(`@NEVER`), `proxmod-reapply` says so at its convergence routine, and
+`proxmod-verify.service` deliberately declines a dependency on `pve-cluster`.
+That is a deliberate design property, not an accident of the current
+implementation: convergence is the thing you most need working when the cluster
+filesystem is not, and a node that has lost quorum still gets its web interface
+back. [`packaging.md`](packaging.md) §7 has the full argument.
+
+### What is claimed for a mixed cluster
+
+Each node runs its own proxmod and its own set of extension packages, exactly as
+each node runs its own `pve-manager`. Nodes at different proxmod versions do not
+interfere with one another, because there is nothing shared for them to
+interfere over.
+
+The sharp edge is that **the web interface you get is the one belonging to the
+node you connected to.** `pveproxy` on node A serves node A's `loader.js` and
+node A's registry. If node A has an extension and node B does not, the same
+cluster looks different depending on which address you typed — and an extension
+tab present on one node and absent on another reads as a bug in the extension
+long before anyone suspects a partial rollout.
+
+So: converge the fleet, and check that you did.
+
+```sh
+pvecm nodes | awk '$1 ~ /^[0-9]+$/ {print $3}' | while read -r n; do
+    printf '%-16s %s\n' "$n" "$(ssh -n "$n" proxmod-verify --registry-only)"
+done
+```
+
+`pvecm nodes` prints four lines of preamble before the table and marks the
+local node `(local)` in a fourth column, so the rows are selected by "the first
+field is a node id" rather than by counting header lines. It reads corosync
+membership rather than pmxcfs, which is why this still answers on a node that
+has lost quorum — the case the fingerprint is most worth having.
+
+Both loops also ssh to the node they are running on. `pvecm nodes` marks it
+`(local)` and the cluster status sets `"local":1`; a loop that does not
+special-case it needs the node to accept its own host key, and reports
+`Host key verification failed` for exactly one node while the other four
+look fine.
+
+`ssh -n` matters in both: the loop body reads from the same stdin the
+`while` is reading node lines from, and an ssh that inherits it consumes
+the rest of the list. The symptom is a fleet check that reports one node
+and exits 0, which is the worst way for this particular loop to fail.
+
+This assumes the node names resolve. They are corosync's names, not
+necessarily DNS ones, and on a cluster without host entries for them the loop
+fails at `ssh` with the fleet still unchecked. Where they do not resolve, take
+the addresses from the cluster status instead:
+
+```sh
+pvesh get /cluster/status --output-format json \
+  | perl -MJSON::PP -0777 -ne 'printf("%s %s\n", $_->{name}, $_->{ip})
+      for grep { $_->{type} eq "node" } @{decode_json($_)}' \
+  | while read -r n ip; do
+        printf '%-16s %s\n' "$n" "$(ssh -n "root@$ip" proxmod-verify --registry-only)"
+    done
+```
+
+Nodes with the same extensions at the same versions print the same fingerprint.
+[`cli.md`](cli.md) has the rest of that flag.
+
+### What is not claimed
+
+- **A backend extension's own cluster behaviour.** proxmod mounts an endpoint at
+  `/cluster/proxmod/<id>`; what happens when two nodes serve that path from
+  different code is the extension's problem, and an extension that writes
+  anywhere shared has to reason about it the way any PVE code does. proxmod
+  gives it no help and no guarantees here.
+- **Anything about migration or HA.** proxmod does not participate in either. It
+  touches no guest and no guest configuration.
+- **That any of this is covered by an automated test.** The QEMU suite is
+  single-node, and adding a second node to it is a real cost for a property that
+  is currently maintained by there being no shared state to break. This is the
+  honest gap in [`testing.md`](testing.md)'s coverage, and it is named here
+  rather than left for a reader to discover.
+
+The evidence that exists is hand-verification: proxmod 0.2.0 was exercised on a
+five-node PVE 9.2.6 cluster — upgrade, install and remove each converging with
+no `--force`, an unrelated `apt` run restarting nothing, and all five nodes
+reporting the same registry fingerprint. That is recorded in the 0.2.0 tag and
+changelog. It is one cluster, once, and is not a substitute for a test.
+
+## 9. Proxmox VE 8 and earlier
 
 Not supported by 0.2.1. Several seams differ, and the `-T`/`ExecReload`
 analysis was done against 9.x only.
