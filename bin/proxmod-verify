@@ -561,21 +561,29 @@ sub check_http {
 # some other method answers first. That failure has no log line at all.
 # ---------------------------------------------------------------------------
 sub check_structure {
-    return if $PREFIX;    # the PVE tree is not in the test prefix
-
     my $ok = eval {
         require Proxmod::Registry;
         require Proxmod::API;
+        require Proxmod::Backend;
+        # The tree the extensions mount into. Inside pvedaemon it is already
+        # compiled; in a fresh perl it has to be asked for by name, and without
+        # it every mount fails with "PVE::API2::Nodes::Nodeinfo is not
+        # available in this process" — a message about this process, not about
+        # the extension being checked. `pvesh` loads it the same way.
+        #
+        # Only the full run reaches here. --live-only and --registry-only are
+        # what proxmod-reapply calls, and neither may pay for this.
+        require PVE::API2;
         1;
     };
     if (!$ok) {
-        warn_('structure', 'could not load proxmod to replay the API tree', trim($@));
+        warn_('structure', 'could not load the API tree to replay it', trim($@));
         return;
     }
 
-    my $exts = eval { Proxmod::Registry::load() };
+    my $exts = registry();
     if (!defined $exts) {
-        warn_('structure', 'could not read the extension registry', trim($@));
+        warn_('structure', 'could not read the extension registry');
         return;
     }
 
@@ -585,8 +593,48 @@ sub check_structure {
         return;
     }
 
-    info_('structure', scalar(@backend) . ' backend extension(s) in the registry',
-        join(', ', map { $_->{id} } @backend));
+    # Loaded one at a time so the report can name which one failed. install()
+    # already contains each extension's failure, so nothing here can die.
+    my @unloadable;
+    for my $ext (@backend) {
+        my $r = eval { Proxmod::Backend::install('pvedaemon', [$ext]) };
+        push @unloadable, $ext->{id} if !$r || $r->{failed};
+    }
+
+    if (@unloadable) {
+        # A warning, not an error, and the distinction is the whole caveat in
+        # the banner above: this is a fresh perl, not pvedaemon, and it does
+        # not have the daemon's @INC. An extension it cannot load here may
+        # well be loaded and serving in the daemon — check_live is the
+        # authority on that. What cannot be loaded simply cannot be replayed.
+        warn_('structure', scalar(@unloadable) . ' backend extension(s) could not be'
+            . ' loaded here, so their routes were not replayed',
+            join(', ', @unloadable) . '; check_live is the authority on whether'
+            . ' the daemons loaded them');
+    }
+
+    my $routes = Proxmod::API::routes();
+    if (!@$routes) {
+        info_('structure', 'no proxmod-mounted routes to replay');
+        return;
+    }
+
+    # The question the journal cannot answer. Each of these registered without
+    # complaint; this asks whether a request to it would actually arrive.
+    my $bad = 0;
+    for my $r (@$routes) {
+        my ($good, $why) =
+            Proxmod::API->assert_route($r->{method}, $r->{route}, $r->{class});
+        next if $good;
+        $bad++;
+        err_("structure.$r->{id}",
+            "$r->{id}: $r->{method} $r->{route} registered but is not reachable", $why);
+    }
+
+    ok_('structure', scalar(@$routes) . ' registered route(s) replayed;'
+        . ' each resolves to the extension that registered it',
+        join(', ', map { "$_->{method} $_->{route}" } @$routes)) if !$bad;
+
     return;
 }
 

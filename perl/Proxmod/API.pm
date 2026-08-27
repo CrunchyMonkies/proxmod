@@ -84,10 +84,26 @@ my %mounts;
 # "class method path" => full path, for idempotent re-registration.
 my %methods;
 
+# Every route proxmod registered in this process, in registration order, as
+# { id, class, method, path, route } — `route` being the full path a request
+# would use. Only the classes proxmod mounted appear, because those are the
+# only ones whose full path it can compute.
+#
+# add_method already resolves each of these as it registers it, and warns when
+# one is unreachable. This ledger exists so the same question can be asked
+# again later, from outside: that warning is emitted once, inside the daemon,
+# at load time, and by the time an administrator wonders whether a
+# pve-manager upgrade has shadowed an endpoint the line has scrolled out of the
+# journal. proxmod-verify replays the ledger on demand.
+my @routes;
+
+sub routes { return [ @routes ] }
+
 sub _reset {
     %root_ready = ();
     %mounts = ();
     %methods = ();
+    @routes = ();
     return;
 }
 
@@ -339,6 +355,8 @@ sub add_method {
     my $full = join('/', $probe, $args{path});
     $full =~ s{/+\z}{};
     $methods{$key} = $full;
+    push @routes, { id => $id, class => $class, method => $args{method},
+        path => $args{path}, route => $full };
 
     # The post-check. Everything above is about registration succeeding; this is
     # about the endpoint being reachable, which is a different question — a path

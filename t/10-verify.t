@@ -4,7 +4,7 @@ use warnings;
 
 use lib 't/lib';
 use lib 'perl';
-use Test::More tests => 25;
+use Test::More tests => 26;
 use ProxmodTest qw(tempdir write_file repo_root);
 use File::Path ();
 
@@ -563,4 +563,113 @@ subtest 'REGRESSION list-printed-nothing' => sub {
     (undef, $out) = verify(build_tree(), '--list');
     like($out, qr{no extensions installed},
         'a host with none says so, rather than printing nothing at all');
+};
+
+subtest 'the structural replay actually replays' => sub {
+    plan tests => 7;
+
+    # check_structure carried a ten-line banner promising to catch an endpoint
+    # that registered successfully and is nonetheless unreachable — a failure
+    # with no log line at all — and then counted the extensions in the registry
+    # and returned. It never resolved a path, and Proxmod::API::assert_route,
+    # written for it, was called from nothing but t/04. This asserts the replay
+    # happens: both that a good route is reported as resolving, and that a
+    # shadowed one is reported as an error rather than counted as healthy.
+    my $lib = tempdir();
+    File::Path::make_path("$lib/Demo");
+    write_file("$lib/Demo/Ext.pm", <<'PM');
+package Demo::Ext;
+use strict;
+use warnings;
+# An extension may depend on PVE at compile time; it is only ever loaded where
+# PVE is present. See the note in examples/proxmod-example-hello.
+use PVE::RESTHandler;
+use PVE::API2;
+use base qw(PVE::RESTHandler);
+
+# The real PVE::API2 builds its tree while it compiles. The stub under t/lib
+# builds it on request instead, because registration is process-global and the
+# tests reset it between groups — so here, where nothing else will, the fixture
+# asks for it.
+BEGIN { PVE::API2::_build_tree() if PVE::API2->can('_build_tree') }
+sub proxmod_register {
+    my ($api) = @_;
+    $api->mount(scope => 'node', subclass => __PACKAGE__);
+    $api->add_method(
+        class => __PACKAGE__,
+        name => 'index',
+        path => '',
+        method => 'GET',
+        permissions => { user => 'all' },
+        parameters => { additionalProperties => 0, properties => {} },
+        returns => { type => 'null' },
+        code => sub { return },
+    );
+    return;
+}
+1;
+PM
+
+    my $p = build_tree(manifests => [
+        { id => 'demo', backend => { module => 'Demo::Ext' } },
+    ]);
+
+    local $PERL5LIB = join(':', $lib, repo_root() . '/t/lib', repo_root() . '/perl');
+    my ($rc, $out) = check($p);
+    is($rc, 0, 'a route that resolves does not fail the run');
+    like($out, qr{registered route\(s\) replayed},
+        'and the replay reports what it replayed');
+    like($out, qr{GET /nodes/proxmod-probe/proxmod/demo},
+        'naming the path a request would take, not just a count of extensions');
+
+    # An extension whose module is not installed where a fresh perl can see it
+    # is the caveat in the banner, not a failure: check_live is the authority
+    # on what the daemons loaded.
+    my $q = build_tree(manifests => [
+        { id => 'ghost', backend => { module => 'Nowhere::Ext' } },
+    ]);
+    ($rc, $out) = check($q);
+    is($rc, 0, 'an extension this perl cannot load is a warning, not an error');
+    like($out, qr{could not be loaded here}, 'and says so, rather than silently replaying nothing');
+
+    # And the case the banner is actually about: a route that registered
+    # without complaint and is nonetheless unreachable. Simulated by re-shaping
+    # the API tree after registration, which is what a pve-manager upgrade does
+    # to a host — the registration succeeded, the ledger still names the path,
+    # and nothing answers it.
+    write_file("$lib/Demo/Wiped.pm", <<'PM');
+package Demo::Wiped;
+use strict;
+use warnings;
+use PVE::RESTHandler;
+use PVE::API2;
+use base qw(PVE::RESTHandler);
+BEGIN { PVE::API2::_build_tree() if PVE::API2->can('_build_tree') }
+sub proxmod_register {
+    my ($api) = @_;
+    $api->mount(scope => 'node', subclass => __PACKAGE__);
+    $api->add_method(
+        class => __PACKAGE__,
+        name => 'index',
+        path => '',
+        method => 'GET',
+        permissions => { user => 'all' },
+        parameters => { additionalProperties => 0, properties => {} },
+        returns => { type => 'null' },
+        code => sub { return },
+    );
+    # Something else re-shapes the tree afterwards.
+    PVE::API2::_build_tree() if PVE::API2->can('_build_tree');
+    return;
+}
+1;
+PM
+
+    my $r = build_tree(manifests => [
+        { id => 'wiped', backend => { module => 'Demo::Wiped' } },
+    ]);
+    ($rc, $out) = check($r);
+    is($rc, 1, 'a route that no longer resolves fails the run');
+    like($out, qr{registered but is not reachable},
+        'and is reported as unreachable, not counted as an extension and called healthy');
 };
