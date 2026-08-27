@@ -312,9 +312,19 @@ sub load {
     my %by_basename;
     _scan_dir($_, \%by_basename) for @$dirs;
 
+    return _effective(\%by_basename);
+}
+
+# The filter and the ordering load() applies to a scanned set, split out so that
+# inventory() can reach the same verdict from the same scan. Two scans would
+# mean two passes of log_warn over every malformed manifest, and an inventory
+# that disagreed with load() if a file changed between them.
+sub _effective {
+    my ($by_basename) = @_;
+
     my @candidates;
-    for my $name (sort keys %by_basename) {
-        my $e = $by_basename{$name};
+    for my $name (sort keys %$by_basename) {
+        my $e = $by_basename->{$name};
         if ($e->{masked}) {
             log_debug("$name: masked by $e->{source}");
             next;
@@ -333,6 +343,46 @@ sub load {
     } @candidates;
 
     return _resolve_order(\@candidates);
+}
+
+# Everything on disk, including what load() drops.
+#
+# load() answers the only question the daemons have: what will be loaded. An
+# administrator running `proxmodctl list` has a different one, and an extension
+# that is masked, disabled by its manifest, or dropped for a missing dependency
+# is precisely what they are looking for — load() omitting it is
+# indistinguishable from it not being installed at all.
+#
+# Each entry is a manifest hashref with one extra field, `state`:
+#
+#   effective   it is in load()'s result; the daemons will load it
+#   disabled    "enabled": false in its own manifest
+#   masked      an empty file or /dev/null symlink shadows it from /etc
+#   unresolved  parsed and enabled, but dropped for a missing or circular
+#               'requires' — the case that otherwise has no visible symptom
+#
+# A manifest too broken to parse is deliberately absent: _parse_manifest has
+# already logged why, and an entry for it would need an id we do not have.
+sub inventory {
+    my (%opt) = @_;
+
+    my $dirs = $opt{dirs} || \@EXT_DIRS;
+
+    my %by_basename;
+    _scan_dir($_, \%by_basename) for @$dirs;
+
+    my %effective = map { $_->{id} => 1 } @{ _effective(\%by_basename) };
+
+    my @out;
+    for my $name (sort keys %by_basename) {
+        my $e = $by_basename{$name};
+        my $state = $e->{masked}            ? 'masked'
+                  : !$e->{enabled}          ? 'disabled'
+                  : $effective{ $e->{id} }  ? 'effective'
+                  :                           'unresolved';
+        push @out, { %$e, state => $state };
+    }
+    return \@out;
 }
 
 # ---------------------------------------------------------------------------

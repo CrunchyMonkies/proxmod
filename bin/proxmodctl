@@ -14,13 +14,20 @@
 
 set -eu
 
-VERIFY=/usr/sbin/proxmod-verify
-REAPPLY=/usr/lib/proxmod/proxmod-reapply
-PATCH=/usr/lib/proxmod/proxmod-patch
-DISABLED=/etc/proxmod/disabled
-PKG_EXT=/usr/share/proxmod/extensions.d
-ADM_EXT=/etc/proxmod/extensions.d
-WWW=/usr/share/proxmod/www
+# Honoured only when we are not root, so it is inert in production — the same
+# rule proxmod-reapply and proxmod-exec follow, and for the same reason: an
+# administrator running proxmodctl is root, and a test running it is not. It
+# exists so t/12 can drive this against a temporary tree with stub programs in
+# it, rather than against the host it happens to be running on.
+prefix=
+if [ "$(id -u)" != 0 ] && [ -n "${PROXMOD_TEST_PREFIX:-}" ]; then
+    prefix=$PROXMOD_TEST_PREFIX
+fi
+
+VERIFY="$prefix/usr/sbin/proxmod-verify"
+REAPPLY="$prefix/usr/lib/proxmod/proxmod-reapply"
+PATCH="$prefix/usr/lib/proxmod/proxmod-patch"
+DISABLED="$prefix/etc/proxmod/disabled"
 
 usage() {
     cat <<'EOF'
@@ -67,25 +74,17 @@ case "$cmd" in
     list)
         # Read straight off the disk rather than out of a running daemon, so
         # this still answers when the daemons are down — which is exactly when
-        # someone is asking.
-        found=0
-        for d in "$PKG_EXT" "$ADM_EXT"; do
-            [ -d "$d" ] || continue
-            for f in "$d"/*.conf; do
-                [ -f "$f" ] || continue
-                found=1
-                printf '%s\n' "$f"
-                sed -n 's/^[[:space:]]*\(id\|version\|module\|assets\|daemons\)[[:space:]]*=[[:space:]]*/    \1: /p' "$f"
-            done
-        done
-        if [ -d "$WWW" ]; then
-            printf '\nfrontend assets in %s:\n' "$WWW"
-            for f in "$WWW"/*.js; do
-                [ -f "$f" ] || continue
-                printf '    %s\n' "${f##*/}"
-            done
-        fi
-        [ "$found" = 1 ] || printf 'no extensions installed\n'
+        # someone is asking. proxmod-verify --list does the reading, using the
+        # same manifest parser the daemons use.
+        #
+        # It used to be done here, with a sed expression looking for `id =
+        # value` in files whose format is JSON. It matched nothing, so `list`
+        # and doctor's extensions section printed an empty block on every host
+        # — and an always-empty listing is indistinguishable from a host with
+        # nothing installed. Reimplementing a parser in shell is the mistake;
+        # the fix is to not have a second one.
+        [ -x "$VERIFY" ] || die "$VERIFY is not installed"
+        "$VERIFY" --list "$@"
         ;;
 
     reapply)
@@ -170,10 +169,15 @@ case "$cmd" in
         printf '\n=== patches ===\n'
         if [ -x "$PATCH" ]; then "$PATCH" status || true; fi
         printf '\n=== verify ===\n'
-        # `[ -x ] && ...` would be the obvious spelling and is wrong under
-        # `set -e`: when the test fails the whole list is false and the script
-        # exits, which on a partially installed host means doctor stops without
-        # printing the section that says so.
+        # `[ -x "$VERIFY" ] && "$VERIFY"` would be the obvious spelling and is
+        # wrong here. It is the last command in the script, so its status is
+        # the script's: on a host where proxmod-verify is missing, doctor
+        # prints a complete and correct report and then exits 1. The person
+        # running it is already looking at a broken host and now has a second
+        # thing that failed, which is not information — it is noise in the one
+        # command whose whole job is to produce something worth pasting into a
+        # bug report. (Mid-script the same spelling is merely inert: an AND-OR
+        # list that short-circuits does not trip `set -e`.)
         if [ -x "$VERIFY" ]; then "$VERIFY" || true; fi
         ;;
 

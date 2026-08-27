@@ -23,6 +23,7 @@
 #   proxmod-verify --quiet         # exit status only
 #   proxmod-verify --live-only     # only the live-load gate (what reapply asks)
 #   proxmod-verify --registry-only # is what they loaded still what is on disk?
+#   proxmod-verify --list          # what is installed, read off the disk
 #
 # Exit status: 0 healthy, 1 something is wrong, 64 bad usage.
 #
@@ -72,7 +73,7 @@ my $LOADER_URL = '/proxmod/loader.js';
 
 # ---------------------------------------------------------------------------
 my %opt = (json => 0, quiet => 0, live_only => 0, registry_only => 0,
-    http => 1, url => $BASE_URL);
+    list => 0, http => 1, url => $BASE_URL);
 
 while (@ARGV) {
     my $a = shift @ARGV;
@@ -80,6 +81,7 @@ while (@ARGV) {
     elsif ($a eq '--quiet')     { $opt{quiet} = 1 }
     elsif ($a eq '--live-only') { $opt{live_only} = 1 }
     elsif ($a eq '--registry-only') { $opt{registry_only} = 1 }
+    elsif ($a eq '--list')      { $opt{list} = 1 }
     elsif ($a eq '--no-http')   { $opt{http} = 0 }
     elsif ($a eq '--url')       { $opt{url} = shift @ARGV // usage(64) }
     elsif ($a eq '-h' || $a eq '--help') { usage(0) }
@@ -91,7 +93,7 @@ sub usage {
     my $fh = $rc ? \*STDERR : \*STDOUT;
     print {$fh} <<'EOF';
 usage: proxmod-verify [--json] [--quiet] [--live-only] [--registry-only]
-                      [--no-http] [--url URL]
+                      [--list] [--no-http] [--url URL]
 
   --json       machine-readable report on stdout
   --quiet      no output; the exit status is the answer
@@ -105,6 +107,11 @@ usage: proxmod-verify [--json] [--quiet] [--live-only] [--registry-only]
                fingerprint on stdout. The second narrow question reapply
                asks, and kept separate from --live-only for the same reason.
                exit: 0 up to date, 1 out of date, 2 could not tell
+  --list       list the extensions installed on this host and the state of
+               each, read off the disk rather than out of a running daemon
+               so that it still answers when the daemons are down — which is
+               when it is asked. Checks nothing; exit 0 unless the registry
+               itself could not be read. This is `proxmodctl list`.
   --no-http    skip the checks that talk to the live web interface
   --url URL    base URL of the local pveproxy (default https://127.0.0.1:8006)
 
@@ -592,6 +599,94 @@ sub trim {
 }
 
 # ---------------------------------------------------------------------------
+# `proxmodctl list`, and the reason it lives here rather than there.
+#
+# The first version of this was a sed expression in proxmodctl looking for
+# `id = value`. Manifests are JSON, so it matched nothing, and `list` and the
+# extensions section of `doctor` printed an empty block on every host that ever
+# ran them — a listing that is silently always empty looks exactly like a host
+# with nothing installed. The fix is not a better pattern: it is to ask the
+# parser the daemons actually use, so that what is listed and what is loaded
+# cannot disagree.
+sub list_registry {
+    if (!eval { require Proxmod::Registry; 1 }) {
+        my $err = $@ || 'unknown error';
+        $err =~ s/\s+\z//;
+        print STDERR "proxmod-verify: cannot load Proxmod::Registry: $err\n";
+        return 1;
+    }
+
+    # @EXT_DIRS is absolute, so a test prefix has to override it; same reason
+    # registry() does.
+    my @dirs = $PREFIX
+        ? ("$PREFIX/usr/share/proxmod/extensions.d", "$PREFIX/etc/proxmod/extensions.d")
+        : ();
+    my $inv = eval { Proxmod::Registry::inventory(@dirs ? (dirs => \@dirs) : ()) };
+    if (!defined $inv) {
+        my $err = $@ || 'unknown error';
+        $err =~ s/\s+\z//;
+        print STDERR "proxmod-verify: cannot read the extension registry: $err\n";
+        return 1;
+    }
+
+    my @www;
+    if (opendir(my $dh, $WWW_DIR)) {
+        @www = sort grep { /\.js\z/ && !/\A\./ } readdir($dh);
+        closedir($dh);
+    }
+    my %present = map { $_ => 1 } @www;
+
+    if ($opt{json}) {
+        require JSON::PP;
+        print JSON::PP->new->canonical->pretty->encode({
+            version    => $VERSION,
+            extensions => [ map { {
+                id       => $_->{id} // $_->{basename},
+                state    => $_->{state},
+                manifest => $_->{source},
+                version  => $_->{version},
+                module   => ($_->{backend} ? $_->{backend}{module} : undef),
+                daemons  => ($_->{backend}
+                    ? [ sort keys %{ $_->{backend}{daemons} } ] : []),
+                assets   => ($_->{frontend} ? $_->{frontend}{assets} : []),
+                requires => ($_->{requires} || []),
+            } } @$inv ],
+            www => \@www,
+        });
+        return 0;
+    }
+
+    if (!@$inv) {
+        print "no extensions installed\n";
+    }
+    for my $e (@$inv) {
+        printf "%s %s [%s]\n", $e->{id} // $e->{basename},
+            $e->{version} // '-', $e->{state};
+        printf "    manifest: %s\n", $e->{source};
+        printf "    backend:  %s in %s\n", $e->{backend}{module},
+            join(', ', sort keys %{ $e->{backend}{daemons} }) if $e->{backend};
+        if ($e->{frontend}) {
+            # Naming the missing file matters more than listing the present
+            # ones: a declared asset that is not on disk is a 404 in the web
+            # interface and nothing else reports it.
+            printf "    frontend: %s\n", join(', ', map {
+                $present{$_} ? $_ : "$_ (MISSING from $WWW_DIR)"
+            } @{ $e->{frontend}{assets} });
+        }
+        printf "    requires: %s\n", join(', ', @{ $e->{requires} })
+            if @{ $e->{requires} || [] };
+    }
+
+    printf "\nfrontend assets in %s:\n", $WWW_DIR;
+    printf "    %s\n", $_ for (@www ? @www : ('(none)'));
+
+    return 0;
+}
+
+if ($opt{list}) {
+    exit list_registry();
+}
+
 if ($opt{live_only}) {
     check_live();
 }

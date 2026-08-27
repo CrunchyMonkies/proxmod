@@ -4,7 +4,7 @@ use warnings;
 
 use lib 't/lib';
 use lib 'perl';
-use Test::More tests => 24;
+use Test::More tests => 25;
 use ProxmodTest qw(tempdir write_file repo_root);
 use File::Path ();
 
@@ -528,4 +528,39 @@ subtest '--registry-only is the narrow question reapply asks' => sub {
 
     ($rc, $out) = verify($current, '--quiet', '--registry-only');
     is($out, '', '--quiet still says nothing at all');
+};
+
+subtest 'REGRESSION list-printed-nothing' => sub {
+    plan tests => 7;
+
+    # `proxmodctl list` ran a sed expression looking for `id = value` against
+    # files whose format is JSON. It matched nothing, so list — and doctor's
+    # extensions section — printed manifest paths and not one field from any of
+    # them, on every host, for every release. An always-empty listing is
+    # indistinguishable from a host with nothing installed, which is why it
+    # survived. proxmodctl now delegates here, to the parser the daemons use,
+    # so what is listed and what is loaded cannot disagree.
+    my $p = build_tree(manifests => [
+        { id => 'alpha',
+          backend  => { module => 'Alpha::Ext', daemons => ['pvedaemon'] },
+          frontend => { assets => ['alpha.js'] } },
+        { id => 'beta', enabled => \0, backend => { module => 'Beta::Ext' } },
+    ]);
+
+    my ($rc, $out) = verify($p, '--list');
+    is($rc, 0, 'exits 0: a listing is not a verdict');
+    like($out, qr{^alpha 1\.0\.0 \[effective\]}m,
+        'names the extension, its version and its state');
+    like($out, qr{Alpha::Ext in pvedaemon}, 'and the module it loads, and where');
+    like($out, qr{^beta 1\.0\.0 \[disabled\]}m,
+        'including one load() drops — which is the one an administrator is looking for');
+    like($out, qr{alpha\.js \(MISSING}, 'and a declared asset that is not on disk');
+
+    write_file("$p/usr/share/proxmod/www/alpha.js", "// present\n");
+    (undef, $out) = verify($p, '--list');
+    unlike($out, qr{MISSING}, 'and does not once the asset is there');
+
+    (undef, $out) = verify(build_tree(), '--list');
+    like($out, qr{no extensions installed},
+        'a host with none says so, rather than printing nothing at all');
 };

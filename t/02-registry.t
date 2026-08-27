@@ -11,7 +11,7 @@ use ProxmodTest qw(tempdir write_file capture_log is_tainted);
 
 use Proxmod::Registry;
 
-plan tests => 64;
+plan tests => 70;
 
 # Two directories, mirroring the real layout: the package-owned drop-in
 # directory and the administrator's override directory on top of it.
@@ -392,3 +392,41 @@ manifest($pkg, '50-hello.conf',
 is(Proxmod::Registry::fingerprint([]), Proxmod::Registry::fingerprint(undef),
     'an empty registry and no registry are the same thing');
 isnt(Proxmod::Registry::fingerprint([]), $base, 'and are not the same as a populated one');
+
+# --- inventory: what load() drops, and why -------------------------------
+#
+# load() answers the daemons' question and no other: what will be loaded. That
+# makes it the wrong function for `proxmodctl list`, because an extension that
+# is masked, disabled or unresolvable is exactly what the administrator running
+# it is trying to find, and load() omitting it looks the same as it not being
+# installed. inventory() reports the whole directory and labels each entry.
+
+clear();
+manifest($pkg, '50-live.conf',
+    '{"id":"live","version":"1.0","backend":{"module":"A::Live"}}');
+manifest($pkg, '51-off.conf',
+    '{"id":"off","version":"1.0","enabled":false,"backend":{"module":"A::Off"}}');
+manifest($pkg, '52-shadowed.conf',
+    '{"id":"shadowed","version":"1.0","backend":{"module":"A::Shadowed"}}');
+manifest($admin, '52-shadowed.conf', '');
+manifest($pkg, '53-lonely.conf',
+    '{"id":"lonely","version":"1.0","requires":["gone"],"backend":{"module":"A::Lonely"}}');
+
+{
+    my ($inv) = capture_log(sub {
+        Proxmod::Registry::inventory(dirs => [$pkg, $admin]);
+    });
+    my %state = map { ($_->{id} // $_->{basename}) => $_->{state} } @$inv;
+
+    is(scalar(@$inv), 4, 'every manifest on disk is reported, not just the live ones');
+    is($state{live}, 'effective', 'the one the daemons will load');
+    is($state{off}, 'disabled', 'the one that disabled itself');
+    is($state{'52-shadowed.conf'}, 'masked', 'the one an admin masked from /etc');
+    # This is the state with no other symptom: nothing logs at warn level, the
+    # extension simply is not there.
+    is($state{lonely}, 'unresolved', 'and the one dropped for a dependency that does not exist');
+
+    my ($live) = load_from($pkg, $admin);
+    is_deeply(ids($live), ['live'],
+        'while load() still answers the daemons\' narrower question');
+}
