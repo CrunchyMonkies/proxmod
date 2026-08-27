@@ -1,7 +1,7 @@
 # Command-line tools
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.1, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** usage text, options, exit codes and check ids below
 were read out of [`bin/proxmodctl`](../bin/proxmodctl),

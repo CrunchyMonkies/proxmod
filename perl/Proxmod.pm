@@ -3,7 +3,7 @@ package Proxmod;
 use strict;
 use warnings;
 
-our $VERSION = '0.2.1';
+our $VERSION = '0.2.2';
 
 # The entry point, loaded by `perl -MProxmod` from the ExecStart drop-in that
 # /usr/lib/proxmod/proxmod-exec installs for pvedaemon and pveproxy.

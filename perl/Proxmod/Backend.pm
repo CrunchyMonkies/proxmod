@@ -6,7 +6,7 @@ use warnings;
 use Proxmod::Log qw(log_debug log_info log_warn log_error);
 use Proxmod::API;
 
-our $VERSION = '0.2.1';
+our $VERSION = '0.2.2';
 
 # Loads each extension's Perl module and lets it register its endpoints.
 #

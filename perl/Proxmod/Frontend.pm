@@ -7,7 +7,7 @@ use Proxmod::Log qw(log_debug log_info log_warn log_error);
 
 use JSON::PP ();
 
-our $VERSION = '0.2.1';
+our $VERSION = '0.2.2';
 
 # Getting extension JavaScript into the Proxmox VE web interface without
 # modifying a single file that Proxmox owns.

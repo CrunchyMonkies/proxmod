@@ -1,7 +1,7 @@
 # proxmod — specification
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.1, Proxmox VE 9.x
+**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every Proxmox-internals claim is cited as `[PVE-F-nnn]`
 into [`pve-facts.md`](pve-facts.md), whose evidence is re-derivable offline from

@@ -1,3 +1,76 @@
+proxmod (0.2.2) unstable; urgency=medium
+
+  * proxmodctl list printed nothing. The reader expected `id = value` and the
+    manifests are JSON, so every extension on the host parsed to the empty
+    string and the command reported success over an empty list. doctor showed
+    an empty extensions section for the same reason, and because it had already
+    set found=1 it could not even say so. Both now delegate to
+    Proxmod::Registry, which is the parser the daemons use, so the list a
+    human reads and the registry a daemon loads can no longer disagree.
+  * Corrupt patch state is no longer destroyed by the next write. read_state
+    already returned a broken flag on unparseable state; nothing consumed it,
+    and write_state re-encoded only version and patches, so apply() would read
+    a corrupt file, get an empty hash, add one entry and write it — taking
+    every prior orig_sha256 and backup path with it, which is precisely the
+    orphaned-backup failure the module exists to prevent. apply, converge and
+    revert_all now refuse to write over broken state and say so.
+  * The exec wrapper's guarded-path list omitted both patch directories. It
+    covered extensions.d on each root but not /usr/share/proxmod/patches or
+    /etc/proxmod/patches, and the walk is -maxdepth 1, so the directories were
+    checked and the spec files inside them were not. A world-writable spec
+    under either could rewrite a Proxmox module as root inside pvedaemon while
+    the wrapper called the tree safe.
+  * proxmod-verify's structure check resolves routes now. It carried a ten-line
+    banner promising to catch an endpoint that registered and is nonetheless
+    unreachable because it was mounted under a greedy path parameter, and its
+    body counted extensions and returned. Proxmod::API::assert_route existed
+    for this and was called only by a test named for the question verify asks.
+  * libhttp-message-perl is a direct Depends. Frontend requires it at runtime
+    and reached it only through libpve-http-server-perl; CI installing it by
+    hand was the tell.
+  * proxmodctl logs -f no longer appears to hang, having piped into grep
+    without --line-buffered. proxmod-reapply's restart decision anchors to
+    the child's changed= field rather than matching the substring anywhere in
+    its output, and its health check no longer counts activating as healthy,
+    which is how a slow-failing daemon reached the end of convergence without
+    ever tripping panic_unwrap.
+  * The package ships the documentation it already promised. proxmod.conf is a
+    conffile telling every administrator to read proxmodctl(8) and
+    /usr/share/doc/proxmod/extension-manifest.md, and proxmod-verify.service
+    declared Documentation= for a man page that did not exist. Both man pages
+    and the operator-facing docs are installed now.
+  * LICENSE, CONTRIBUTING.md and SECURITY.md at the paths GitHub reads, and a
+    maintainer address that is a real one.
+  * AGENTS.md, as a pointer to docs/conventions.md rather than a second copy of
+    it. A contributor or agent arriving cold got no pointer to the no-strict
+    rule, the /etc/pve prohibition or the fact ledger, all of which are law.
+  * t/11-conventions.t and t/13-invariants.t assert mechanically what the
+    conventions asserted only in prose: the four-line status block on every
+    doc, every [PVE-F-nnn] citation resolving to the ledger and every ledger
+    entry being cited, the version fan-out agreeing everywhere it is stated,
+    install lines naming no version they will outlive, and the deliberate
+    duplications at the taint boundaries staying in step. The last of those had
+    already drifted: Frontend's copy of _read_file returned undef for a
+    zero-byte file where Registry's and Patch's return '', which is invisible
+    until loader_body dies on an empty template with a stale errno.
+  * The release path runs the tests it publishes from, lintian is a gate rather
+    than a comment on both paths, and make lint fails instead of passing when
+    a linter is missing and LINT_STRICT is set. Actions are pinned by digest,
+    ci.yml has a concurrency group, dependabot watches the base image, and a
+    monthly job runs the PVE source harvest so a moved seam is reported by a
+    machine rather than noticed by whoever next reads the sentence it broke.
+  * Releases are published from debian/changelog rather than from generated
+    commit subjects, and additionally as an OCI artifact on ghcr.io. A release
+    tag must be annotated and its message must carry an E2E: line naming the
+    QEMU run it was cut from, or saying why there is none.
+  * test/integration/12-patch.sh covers the patch facility against a real
+    index.html.tpl across a real pve-manager upgrade, which is the claim
+    Patch.pm exists to make and had been proven only against stubs.
+  * docs/compatibility.md states what is and is not claimed for a cluster,
+    including that no automated test covers any of it.
+
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Thu, 27 Aug 2026 00:00:00 +0000
+
 proxmod (0.2.1) unstable; urgency=medium
 
   * Frontend: proxmod-ui.js no longer runs in strict mode. ExtJS resolves
