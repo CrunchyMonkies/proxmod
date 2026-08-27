@@ -14,6 +14,12 @@ Homepage: https://github.com/CrunchyMonkies/proxmod
 # add-on, which is a worse outcome than the one it prevents. proxmod probes
 # every seam it uses at runtime and disables itself feature by feature instead.
 # See docs/compatibility.md.
+# No util-linux here, though proxmod-reapply and proxmodctl both need flock(1)
+# from it. util-linux is Essential: yes, so it is present on every Debian system
+# by definition and an unversioned dependency on it says nothing — which is what
+# lintian's depends-on-essential-package-without-using-version means. The
+# requirement is real; the way to record it is this comment, not a field that
+# can never be unsatisfied.
 Package: proxmod
 Architecture: all
 Depends:
@@ -21,8 +27,16 @@ Depends:
  ${perl:Depends},
  pve-manager,
  libpve-http-server-perl,
+# Proxmod::Frontend builds the loader response with HTTP::Headers and
+# HTTP::Response. libpve-http-server-perl depends on this too, so the module is
+# present on every PVE host today and nothing has ever failed for want of it —
+# which is exactly why it needs naming here. A transitive dependency is a
+# promise made by somebody else's package about somebody else's reasons, and
+# the day pve-http-server stops needing HTTP::Message, proxmod's frontend
+# breaks on a host whose dependencies are all satisfied. CI installs it by name
+# for the same reason: nothing else in the test environment would drag it in.
+ libhttp-message-perl,
  systemd,
- util-linux,
 Recommends:
  curl,
 Suggests:

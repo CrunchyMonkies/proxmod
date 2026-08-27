@@ -37,3 +37,12 @@ override_dh_installsystemd:
 # path of one.
 override_dh_compress:
 	dh_compress -X.md
+
+# dpkg-deb's default compressor is a property of the build host, not of this
+# package: Debian trixie produces control.tar.xz/data.tar.xz, an Ubuntu host
+# produces .zst, and lintian rejects the second as a malformed archive. That
+# turns "does this package pass lint" into "what did you build it on", which is
+# a question no gate should have to ask. Pinned to xz, which is what the archive
+# expects and what CI would have produced anyway.
+override_dh_builddeb:
+	dh_builddeb -- -Zxz
