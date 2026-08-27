@@ -3,8 +3,8 @@
 # summary at the end.
 #
 # Order is load-bearing and the numbering is the schedule: 00 records the
-# pristine baseline that 02 and 11 compare against, 01 installs what 11 purges,
-# 04 installs the extension that 05 through 10 assume is present. So a failure
+# pristine baseline that 02 and 13 compare against, 01 installs what 13 purges,
+# 04 installs the extension that 05 through 12 assume is present. So a failure
 # in 00 or 01 aborts — every later result would be measured against a baseline
 # that was never taken, or a package that was never installed.
 #

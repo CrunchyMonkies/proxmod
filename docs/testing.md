@@ -125,14 +125,14 @@ test/qemu/vm.sh stop
 
 They run in order and share state through `/var/tmp/proxmod-e2e`. The
 numbering is the schedule, not decoration: `00` records the baseline that `02`
-and `12` compare against, `01` installs what `12` purges, `04` installs the
-extension that `05`–`11` assume is there. A failure in `00` or `01` aborts the
+and `13` compare against, `01` installs what `13` purges, `04` installs the
+extension that `05`–`12` assume is there. A failure in `00` or `01` aborts the
 run; everything after that continues, because one run reporting six real
 failures is worth more than six runs each reporting the first.
 
 | | Proves |
 |---|---|
-| `00-baseline` | Refuses to start on a host that already has proxmod on it, and records the sha256 of every dpkg-owned file under Proxmox's directories. Plants a file belonging to a notional third package for `11` to find. |
+| `00-baseline` | Refuses to start on a host that already has proxmod on it, and records the sha256 of every dpkg-owned file under Proxmox's directories. Plants a file belonging to a notional third package for `13` to find. |
 | `01-install` | Both daemons are **actually running proxmod** — read from the journal of the current process, scoped by `ExecMainStartTimestamp`, not from a fresh `perl -MProxmod -e1`. |
 | `02-no-mutation` | **The headline test.** `dpkg -V` silent, every PVE-owned file byte-identical to the baseline, and specifically nothing in `index.html.tpl`, `PVE/API2/`, or `pvemanagerlib.js`. |
 | `03-frontend` | Exactly one loader tag, at the right byte offset — after `pvemanagerlib.js`, before `Ext.onReady`. Idempotent across a restart, absent from the novnc and xtermjs bodies, and no path traversal out of `/proxmod/`. |
@@ -144,7 +144,8 @@ failures is worth more than six runs each reporting the first.
 | `09-noop-apt` | An apt run that has nothing to do with proxmod does **not** restart the daemons. The regression test for the prior art's APT hook. |
 | `10-permissions` | A group-writable module means unauthenticated root inside `pvedaemon`, so the wrapper refuses to inject — the daemon still starts, proxmod does not load, and `proxmod-verify` fails loudly. |
 | `11-registry` | Removing an extension takes it out of the *running* daemons, and installing one puts it back — with no `--force` anywhere, because the fingerprint in each daemon's booted line no longer matches the registry on disk. The regression test for a defect that is invisible to `prove` and to every other check here: the host stays healthy, the daemons stay up, and the extension an administrator just removed keeps answering. |
-| `12-purge` | The host is indistinguishable from one proxmod was never on: drop-ins gone, `dpkg -V` clean, no orphaned backups, and the planted foreign file untouched. |
+| `12-patch` | The managed patch facility against a real Proxmox file: it ships inert, enabling a spec is a deliberate edit, converging twice changes nothing, and — the reason the module exists — a `pve-manager` upgrade that replaces the patched file does **not** get a stale backup restored over it. Reverts cleanly, leaving `dpkg -V` silent and no orphaned backup. |
+| `13-purge` | The host is indistinguishable from one proxmod was never on: drop-ins gone, `dpkg -V` clean, no orphaned backups, and the planted foreign file untouched. |
 
 ---
 

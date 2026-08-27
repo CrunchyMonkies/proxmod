@@ -1,5 +1,5 @@
 #!/bin/bash
-# 11 — removal, which is the promise being made to whoever installs this.
+# 13 — removal, which is the promise being made to whoever installs this.
 #
 # The test is not that proxmod's files are gone. It is that the host is
 # indistinguishable from one on which proxmod was never installed: the daemons
