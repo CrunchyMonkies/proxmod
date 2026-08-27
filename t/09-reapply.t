@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use lib 't/lib';
-use Test::More tests => 33;
+use Test::More tests => 36;
 use ProxmodTest qw(tempdir write_file repo_root);
 use File::Path ();
 
@@ -44,11 +44,27 @@ sub build_tree {
 
     # The systemctl stub. `is-active` is what the script uses to decide whether
     # a daemon came back, so it is the knob the self-heal tests turn.
-    my $state = $opt{is_active} || 'active';
+    #
+    # is_active_seq gives a unit a state per is-active call, running off the end
+    # onto the last entry. A single state cannot express `activating`, which is
+    # not a verdict but the absence of one: the interesting question is what the
+    # unit settles into, and answering it needs at least two answers.
+    my @seq = @{ $opt{is_active_seq} || [ $opt{is_active} || 'active' ] };
+    write_file("$p/is-active.seq", join("\n", @seq) . "\n");
+    write_file("$p/is-active.n", "0\n");
     write_file("$p/bin/systemctl", <<"EOF");
 #!/bin/sh
 echo "\$*" >> "$p/systemctl.log"
-case "\$1" in is-active) echo '$state' ;; esac
+case "\$1" in
+    is-active)
+        n=\$(cat "$p/is-active.n" 2>/dev/null || echo 0)
+        n=\$((n + 1))
+        echo "\$n" > "$p/is-active.n"
+        s=\$(sed -n "\${n}p" "$p/is-active.seq")
+        [ -n "\$s" ] || s=\$(tail -n 1 "$p/is-active.seq")
+        echo "\$s"
+        ;;
+esac
 exit 0
 EOF
     chmod 0755, "$p/bin/systemctl" or die "chmod: $!";
@@ -90,8 +106,12 @@ EOF
     if (defined $opt{patch}) {
         File::Path::make_path("$p/usr/lib/proxmod");
         my ($changed, $failed, $rc) = @{ $opt{patch} };
+        # patch_lines are the facility's own log output, which reapply captures
+        # alongside the summary and has to tell apart from it.
+        my $extra = join('', map { "echo '$_'\n" } @{ $opt{patch_lines} || [] });
         write_file("$p/usr/lib/proxmod/proxmod-patch",
-            "#!/bin/sh\necho 'proxmod-patch: changed=$changed failed=$failed'\nexit $rc\n");
+            "#!/bin/sh\n$extra"
+            . "echo 'proxmod-patch: changed=$changed failed=$failed'\nexit $rc\n");
         chmod 0755, "$p/usr/lib/proxmod/proxmod-patch" or die "chmod: $!";
     }
 
@@ -109,6 +129,9 @@ sub reapply {
 
     local $ENV{PROXMOD_TEST_PREFIX} = $p;
     local $ENV{PATH} = "$p/bin:$ENV{PATH}";
+    # unit_ok waits out `activating` for half a minute on a real host. Two
+    # seconds is enough to prove it waits at all, which is what is under test.
+    local $ENV{PROXMOD_TEST_SETTLE_SECS} = 2;
 
     my $rc = system("$REAPPLY " . join(' ', @args) . " 2>$err");
     $rc = $rc == -1 ? -1 : $rc >> 8;
@@ -343,6 +366,38 @@ subtest 'a daemon that does not come back leaves a stock host' => sub {
     like($err, qr{proxmod is now inert}, 'the journal says what happened and how to undo it');
 };
 
+subtest 'REGRESSION activating-believed' => sub {
+    plan tests => 4;
+    # `activating` used to count as healthy, which meant the prime directive
+    # failed in the one case it was written for. A daemon that compiles proxmod
+    # and then dies a few seconds later — a module that throws on its first
+    # request, a seam that moved under an extension — is `activating` at the
+    # moment we ask and `failed` a moment after. Reading the state once and
+    # believing it left the drop-in installed, the daemon dead, and nothing in
+    # the journal about either.
+    my $p = build_tree(is_active_seq => [ 'activating', 'activating', 'failed' ]);
+
+    my ($rc, $err, $calls) = reapply($p);
+    is($rc, 1, 'the failure is reported, not slept through');
+    ok(!-e dropin($p, 'pvedaemon.service'), 'the drop-in is removed');
+    is(scalar(grep { /^restart / } @$calls), 2, 'and both daemons are started stock');
+    like($err, qr{proxmod is now inert}, 'the journal says what happened');
+};
+
+subtest 'a daemon that is merely slow to start is left alone' => sub {
+    plan tests => 3;
+    # The other half of the same fix, and the reason it is a wait rather than a
+    # refusal: `activating` on its way to `active` is a healthy daemon on a
+    # busy host. Unwrapping that one would be the self-heal causing the outage
+    # it exists to prevent.
+    my $p = build_tree(is_active_seq => [ 'activating', 'active' ]);
+
+    my ($rc, $err, $calls) = reapply($p);
+    is($rc, 0, 'exits 0');
+    ok(-f dropin($p, 'pvedaemon.service'), 'the drop-in stays');
+    is(scalar(grep { /^restart / } @$calls), 0, 'nothing is restarted stock');
+};
+
 subtest 'an inactive daemon is not mistaken for a broken one' => sub {
     plan tests => 2;
     # try-restart on a stopped unit correctly leaves it stopped. Treating that
@@ -445,6 +500,26 @@ subtest 'a managed patch that changed a file causes a restart' => sub {
     is($rc, 0, 'exits 0');
     ok(scalar(grep { /try-restart/ } @$calls),
         'the daemons are restarted even though the drop-ins did not change');
+};
+
+subtest 'REGRESSION changed=0-matched-anywhere' => sub {
+    plan tests => 2;
+    # The restart decision read `changed=0` as a substring of everything
+    # proxmod-patch printed, not as its summary line. The facility's log lines
+    # quote spec ids, paths and error text from elsewhere, so any one of them
+    # containing that string suppressed the restart — and a patched Perl module
+    # that nothing recompiles is a patch that appears to have worked and has
+    # not. Exactly the defect the patched-file restart exists to prevent,
+    # reached through the parser instead.
+    my $p = build_tree(verify_rc => 0, patch => [ 1, 0, 0 ], patch_lines => [
+        'proxmod: patch spec changed=0-probe applied',
+    ]);
+    reapply($p);
+
+    my ($rc, undef, $calls) = reapply($p);
+    is($rc, 0, 'exits 0');
+    ok(scalar(grep { /try-restart/ } @$calls),
+        'the summary decides, not a log line that happens to contain the same text');
 };
 
 subtest 'a patch facility with nothing to do restarts nothing' => sub {

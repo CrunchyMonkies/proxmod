@@ -285,15 +285,44 @@ restart_units() { # $@ = units
 # A unit counts as healthy if it is active, or if it was not running before we
 # started (inactive after try-restart on an inactive unit is the correct
 # outcome, not a failure).
+#
+# `activating` is not an answer, it is the absence of one, and it used to be
+# accepted as a yes. A daemon that dies a few seconds into startup — a module
+# that compiles but throws on the first request, a seam that moved under an
+# extension — passes through `activating` on its way to `failed`, and asking
+# once catches it mid-flight. The prime directive then fails silently in the one
+# case it was written for: panic_unwrap never runs, and the host is left with a
+# dead pvedaemon and proxmod's drop-in still in place. So `activating` is waited
+# out rather than believed.
+#
+# Bounded, because the alternative to a wrong answer is no answer at all: a unit
+# still starting after SETTLE_SECS is reported healthy, exactly as before. This
+# is not a regression against a slow host — it is the old behaviour, reached
+# only after we have given the daemon a fair chance to fail. A daemon that comes
+# up cleanly leaves `activating` in well under a second, so the loop normally
+# exits on its first pass and costs nothing.
+SETTLE_SECS=30
+[ -n "$prefix" ] && SETTLE_SECS=${PROXMOD_TEST_SETTLE_SECS:-2}
+
 unit_ok() { # $1 = unit
     have_systemd || return 0
-    # is-active exits non-zero for anything but "active" while still printing
-    # the state, which is the part we want.
-    _state=$(systemctl is-active "$1" 2>/dev/null) || true
-    case "$_state" in
-        active|activating|inactive) return 0 ;;
-        *) return 1 ;;
-    esac
+    _waited=0
+    while :; do
+        # is-active exits non-zero for anything but "active" while still
+        # printing the state, which is the part we want.
+        _state=$(systemctl is-active "$1" 2>/dev/null) || true
+        case "$_state" in
+            active|inactive) return 0 ;;
+            activating) ;;
+            *) return 1 ;;
+        esac
+        if [ "$_waited" -ge "$SETTLE_SECS" ]; then
+            log "warn: $1 is still starting after ${SETTLE_SECS}s; treating it as healthy"
+            return 0
+        fi
+        sleep 1
+        _waited=$((_waited + 1))
+    done
 }
 
 # The self-heal. Reached only when a daemon did not come back, which is the one
@@ -336,17 +365,37 @@ converge_patches() {
 
     _pout=$("$PATCH" converge 2>&1) || patch_failed=1
 
-    # The fixed summary line proxmod-patch prints for exactly this reader.
-    case "$_pout" in
-        *'changed=0 failed=0'*) return 0 ;;
+    # The fixed summary line proxmod-patch prints for exactly this reader,
+    # matched as a whole line rather than as a substring of the whole capture.
+    # $_pout also holds every log line the patch facility emitted, and those
+    # quote spec ids, file paths and error text from elsewhere. One of them
+    # containing `changed=0` — a spec named after a setting, a path under a
+    # directory someone called that — would be read as the summary, and the
+    # restart that a genuinely changed Perl module needs would not happen. The
+    # daemons would keep running the code they compiled before the patch.
+    #
+    # No summary line at all means proxmod-patch died before printing one, and
+    # that falls through to patched=1 below: restarting when nothing changed
+    # costs an interruption, not restarting when something did costs the fix.
+    _sum=
+    while IFS= read -r _line; do
+        case "$_line" in
+            'proxmod-patch: changed='*' failed='*) _sum=$_line ;;
+        esac
+    done <<EOF
+$_pout
+EOF
+
+    case "$_sum" in
+        'proxmod-patch: changed=0 failed=0') return 0 ;;
     esac
 
     printf '%s\n' "$_pout" | while IFS= read -r _line; do
         [ -n "$_line" ] && log "patch: $_line"
     done
 
-    case "$_pout" in
-        *'changed=0'*) ;;
+    case "$_sum" in
+        'proxmod-patch: changed=0 '*) ;;
         *) patched=1 ;;
     esac
     if [ "$patch_failed" = 1 ]; then
