@@ -1,0 +1,116 @@
+.\" See the note at the top of proxmodctl.8 about why this is hand-written roff.
+.TH PROXMOD-VERIFY 8 "2026-08-27" "proxmod 0.2.1" "System Administration"
+.SH NAME
+proxmod-verify \- check that proxmod is loaded and working on this host
+.SH SYNOPSIS
+.B proxmod-verify
+.RB [ \-\-json ]
+.RB [ \-\-quiet ]
+.RB [ \-\-live-only ]
+.RB [ \-\-registry-only ]
+.RB [ \-\-list ]
+.RB [ \-\-no-http ]
+.RB [ \-\-url
+.IR URL ]
+.SH DESCRIPTION
+.B proxmod-verify
+answers one question: is proxmod actually doing what it claims to be doing on
+this host, right now. It is what
+.B "proxmodctl status"
+runs, what
+.B proxmod-verify.service
+runs at boot, and what
+.B proxmod-reapply
+consults before it decides whether to restart anything.
+.PP
+The distinction it exists for is between
+.I registered
+and
+.IR reachable .
+An extension can install its API methods without complaint and still be
+unreachable, because a Proxmox upgrade moved the path it mounted under. Nothing
+logs that. This command replays the routes proxmod registered and resolves each
+one, so the failure has a name before an administrator finds it by hand.
+.PP
+Run without arguments it checks everything and prints a report. Every check has
+an id, so a monitoring system can alert on one finding rather than on the exit
+status alone.
+.SH OPTIONS
+.TP
+.B \-\-json
+Machine-readable report on stdout.
+.TP
+.B \-\-quiet
+No output; the exit status is the answer.
+.TP
+.B \-\-live-only
+Check only whether the running daemons have proxmod loaded at all. This is the
+narrow question
+.B proxmod-reapply
+asks before it restarts anything, and it is deliberately narrow: a failing HTTP
+check is not a reason to bounce
+.BR pvedaemon .
+.TP
+.B \-\-registry-only
+Check only whether the running daemons loaded the extension registry that is on
+disk now, and print that registry's fingerprint on stdout. Exit
+.B 0
+up to date,
+.B 1
+out of date,
+.B 2
+could not tell.
+.TP
+.B \-\-list
+List the extensions installed on this host and the state of each \-
+.BR effective ", " disabled ", " masked " or " unresolved .
+Read off the disk rather than out of a running daemon, so it still answers when
+the daemons are down, which is when it is asked. Checks nothing; exits
+.B 0
+unless the registry itself could not be read. This is
+.BR "proxmodctl list" .
+.TP
+.B \-\-no-http
+Skip the checks that talk to the live web interface.
+.TP
+.BI \-\-url " URL"
+Base URL of the local
+.BR pveproxy .
+Default
+.IR https://127.0.0.1:8006 .
+.SH EXIT STATUS
+.TP
+.B 0
+Healthy.
+.TP
+.B 1
+A check failed. Under
+.B \-\-registry-only
+this means the loaded registry is stale, which is a convergence job, not a
+fault.
+.TP
+.B 2
+.B \-\-registry-only
+could not tell.
+.TP
+.B 64
+Usage error.
+.SH NOTES
+The structural check runs in a fresh
+.BR perl ,
+not inside
+.BR pvedaemon ,
+so an extension that this process cannot load is reported as a warning rather
+than an error: the daemons have a different
+.B @INC
+and may well have loaded it. The live check, which asks the running daemons, is
+the authority on that question.
+.SH SEE ALSO
+.BR proxmodctl (8),
+.BR pvedaemon (8),
+.BR pveproxy (8)
+.PP
+.IR /usr/share/doc/proxmod/verification.md ,
+which lists every check id and what each one means.
+.SH BUGS
+https://github.com/CrunchyMonkies/proxmod/issues

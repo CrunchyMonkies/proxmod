@@ -17,6 +17,8 @@ LIBDIR    := $(prefix)/lib/proxmod
 SBINDIR   := $(prefix)/sbin
 SHAREDIR  := $(prefix)/share/proxmod
 UNITDIR   := $(prefix)/lib/systemd/system
+MANDIR    := $(prefix)/share/man/man8
+DOCDIR    := $(prefix)/share/doc/$(PACKAGE)
 SYSCONF   := /etc/proxmod
 STATEDIR  := /var/lib/proxmod
 
@@ -51,6 +53,24 @@ SHELL_FILES  := $(EXEC_SH) $(BIN_SH) $(wildcard scripts/*.sh) \
 # The example's asset is included deliberately: it is the contract other
 # extension authors copy, so a syntax error in it is a defect in ours.
 JS_FILES     := $(wildcard www/*.js) $(wildcard examples/*/www/*.js)
+
+# Man pages, and the subset of docs/ that belongs on a host rather than in the
+# repository. Two audiences, both of whom are holding an installed package: the
+# administrator who has just run `proxmodctl status` and not liked the answer,
+# and the author of an extension for this host. Everything else in docs/ — the
+# ADRs, the conventions, the PVE fact ledger, the packaging and testing guides —
+# is about developing proxmod itself, and is one `git clone` away.
+#
+# extension-manifest.md is not optional: conf/proxmod.conf is a conffile that
+# lands on every host and tells the administrator to read it at exactly this
+# path. A promise made by a conffile is a promise the package has to keep.
+MAN_PAGES    := man/proxmodctl.8 man/proxmod-verify.8
+DOC_FILES    := docs/getting-started.md docs/install.md docs/cli.md \
+                docs/troubleshooting.md docs/verification.md \
+                docs/compatibility.md docs/security.md docs/patching.md \
+                docs/glossary.md \
+                docs/extension-manifest.md docs/backend-extensions.md \
+                docs/frontend-extensions.md docs/perl-api.md docs/js-api.md
 
 # Vendored upstream Proxmox source. Read-only reference: nothing here is built,
 # linted, installed or packaged, and every target above works without it. Note
@@ -118,6 +138,13 @@ install:
 	$(INSTALL) -d $(DESTDIR)$(SYSCONF)/extensions.d $(DESTDIR)$(SYSCONF)/patches
 	if [ -f conf/proxmod.conf ]; then $(INSTALL_DATA) conf/proxmod.conf $(DESTDIR)$(SYSCONF)/proxmod.conf; fi
 	$(INSTALL) -d $(DESTDIR)$(STATEDIR)
+	# Man pages and the on-host documentation set. debian/rules keeps
+	# dh_compress off the .md files so the path conf/proxmod.conf names
+	# stays the path that exists.
+	$(INSTALL) -d $(DESTDIR)$(MANDIR)
+	set -e; for m in $(MAN_PAGES); do $(INSTALL_DATA) "$$m" $(DESTDIR)$(MANDIR)/; done
+	$(INSTALL) -d $(DESTDIR)$(DOCDIR)
+	set -e; for d in $(DOC_FILES); do $(INSTALL_DATA) "$$d" $(DESTDIR)$(DOCDIR)/; done
 
 ## test: unit tests. No Proxmox host required — t/lib holds PVE stubs.
 test:

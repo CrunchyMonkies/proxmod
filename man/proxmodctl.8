@@ -1,0 +1,162 @@
+.\" proxmodctl(8) — hand-written roff, deliberately.
+.\"
+.\" Generating this from docs/cli.md would mean a build-dependency on pandoc or
+.\" ronn for a file that changes when the CLI does, which is rarely. The cost of
+.\" the tool is paid on every build by everyone; the cost of the duplication is
+.\" paid by whoever changes proxmodctl's usage text. t/11 keeps the two in step.
+.TH PROXMODCTL 8 "2026-08-27" "proxmod 0.2.1" "System Administration"
+.SH NAME
+proxmodctl \- administer the proxmod extension framework for Proxmox VE
+.SH SYNOPSIS
+.B proxmodctl
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+.B proxmodctl
+is the administrator's entry point to proxmod, which loads extensions into the running
+.B pvedaemon
+and
+.B pveproxy
+without modifying any Proxmox-owned file.
+.PP
+Start with
+.BR "proxmodctl status" .
+Everything else in this page exists for when that answers badly.
+.PP
+.BR status ", " list ", " logs " and " doctor
+change nothing and need no privilege beyond reading the journal.
+.BR enable ", " disable ", " reapply
+and every
+.B patch
+subcommand other than
+.B status
+require root.
+.SH COMMANDS
+.TP
+.B status
+Is proxmod working? Runs
+.BR proxmod-verify (8)
+and reports what it found.
+.TP
+.B "status --json"
+The same report, machine-readable, for monitoring.
+.TP
+.B list
+The extensions this host has installed, and the state of each: whether it is
+loaded, disabled in its own manifest, masked by an override under
+.IR /etc/proxmod/extensions.d ,
+or dropped because something it requires is missing. Read off the disk rather
+than out of a running daemon, so it still answers when the daemons are down.
+.TP
+.B reapply
+Converge the systemd drop-ins onto what the package intends, and restart the
+wrapped daemons only if something changed. Safe to run at any time; costs
+nothing when there is nothing to do.
+.TP
+.B "reapply --force"
+Restart the wrapped daemons even when nothing changed.
+.TP
+.B enable
+Remove the kill switch and restart the daemons.
+.TP
+.B disable
+Stop loading proxmod and restart the daemons exactly as Proxmox ships them. See
+.B THE KILL SWITCH
+below.
+.TP
+.BR logs " [" \-f ]
+What proxmod said in the daemons' journals, without the rest of the journal.
+.B \-f
+follows.
+.TP
+.BI patch " subcommand"
+The managed patch facility: \fBstatus\fR, \fBconverge\fR, \fBapply\fR \fIid\fR,
+\fBrevert\fR \fIid\fR, \fBrevert-all\fR. With no subcommand, \fBstatus\fR.
+Patching a Proxmox file is proxmod's last resort and is off by default on every
+host; read
+.I /usr/share/doc/proxmod/patching.md
+before enabling a spec.
+.TP
+.B doctor
+.B status
+plus versions, the live
+.B ExecStart
+and
+.B ExecReload
+of both units, the registry and the patch state. This is the output to paste
+into a bug report.
+.SH THE KILL SWITCH
+.B "proxmodctl disable"
+creates
+.IR /etc/proxmod/disabled .
+The
+.B ExecStart
+wrapper checks for that file before it loads any proxmod code at all, so the
+switch still works when proxmod itself is broken \- including when
+.B proxmodctl
+cannot run. The equivalent by hand, on a host you cannot otherwise recover:
+.PP
+.RS 4
+.EX
+touch /etc/proxmod/disabled
+systemctl restart pvedaemon pveproxy
+.EE
+.RE
+.SH DAEMON RESTARTS
+.BR enable ", " disable " and " reapply
+restart
+.B pvedaemon
+and
+.BR pveproxy .
+.B Running guests are not affected.
+Open web-interface sessions reconnect on their own. A daemon that does not come
+back is the one outcome proxmod treats as unacceptable: its drop-ins are removed
+and the daemon is restarted stock, leaving a host running unmodified Proxmox and
+an explanation in the journal.
+.SH EXIT STATUS
+.TP
+.B 0
+Success. For
+.BR status ", " proxmod is healthy.
+.TP
+.B 1
+A check failed, or the command did not do what it was asked to.
+.TP
+.B 64
+Usage error.
+.SH FILES
+.TP
+.I /etc/proxmod/proxmod.conf
+Global configuration. A conffile: your edits survive upgrades.
+.TP
+.I /etc/proxmod/extensions.d/
+Administrator overrides, one drop-in manifest per extension. A file here
+shadows the package-owned manifest of the same name; an empty file or a symlink
+to
+.I /dev/null
+masks the extension entirely.
+.TP
+.I /usr/share/proxmod/extensions.d/
+Package-owned manifests. Extension packages install here. Not for editing.
+.TP
+.I /etc/proxmod/disabled
+The kill switch. Presence, not content, is what matters.
+.TP
+.I /var/lib/proxmod/
+Convergence state and managed-patch records, including the backups
+.B "patch revert"
+restores from.
+.SH SEE ALSO
+.BR proxmod-verify (8),
+.BR pvedaemon (8),
+.BR pveproxy (8),
+.BR systemctl (1)
+.PP
+.IR /usr/share/doc/proxmod/ ,
+in particular
+.IR cli.md ,
+.I troubleshooting.md
+and
+.IR extension-manifest.md .
+.SH BUGS
+https://github.com/CrunchyMonkies/proxmod/issues

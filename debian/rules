@@ -29,3 +29,11 @@ override_dh_fixperms:
 # restart things would mean two mechanisms deciding when the daemons bounce.
 override_dh_installsystemd:
 	dh_installsystemd --no-restart-after-upgrade --no-stop-on-upgrade
+
+# conf/proxmod.conf is a conffile on every host and it names
+# /usr/share/doc/proxmod/extension-manifest.md. dh_compress would gzip anything
+# in that directory over 4 KiB, and the administrator following the pointer
+# would find nothing there. Man pages are still compressed: nobody types the
+# path of one.
+override_dh_compress:
+	dh_compress -X.md
