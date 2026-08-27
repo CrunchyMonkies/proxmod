@@ -303,6 +303,11 @@ sub _loader_page {
 sub loader_body {
     my ($assets) = @_;
 
+    # undef means open failed, and only that — an empty file reads as ''. The
+    # distinction matters here: a zero-byte template used to die with "cannot
+    # read: $!" and a $! left over from some earlier call, because open had in
+    # fact succeeded. It now falls through to the placeholder count below and
+    # dies saying the template has no placeholder, which is what is wrong.
     my $runtime = _read_file($RUNTIME_FILE);
     die "cannot read $RUNTIME_FILE: $!\n" if !defined $runtime;
 
@@ -326,6 +331,10 @@ sub loader_body {
     return $runtime;
 }
 
+# Byte-identical to the copies in Registry.pm and Patch.pm, and t/13 asserts
+# that it stays that way. It used to differ by one line — this one returned
+# undef for a zero-byte file where the others return '' — and the difference was
+# invisible, deliberate nowhere, and load-bearing in loader_body.
 sub _read_file {
     my ($path) = @_;
     open(my $fh, '<', $path) or return undef;
@@ -333,7 +342,7 @@ sub _read_file {
     local $/;
     my $content = <$fh>;
     close($fh);
-    return $content;
+    return defined($content) ? $content : '';
 }
 
 # ---------------------------------------------------------------------------

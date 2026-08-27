@@ -26,7 +26,7 @@ release](https://github.com/CrunchyMonkies/proxmod/releases). Download the two
 `.deb` files, then:
 
 ```sh
-apt install ./proxmod_0.2.1_all.deb
+apt install ./proxmod_*_all.deb
 ```
 
 <details>
@@ -74,7 +74,7 @@ it is the thing extensions plug into.
 ### Install an extension
 
 ```sh
-apt install ./proxmod-example-hello_0.2.0_all.deb
+apt install ./proxmod-example-hello_*_all.deb
 proxmodctl list
 ```
 
@@ -179,7 +179,7 @@ it works even when proxmod itself is broken. It is the thing to reach for at
 ## 6. Upgrading
 
 ```sh
-apt install ./proxmod_0.2.1_all.deb
+apt install ./proxmod_*_all.deb
 proxmod-verify
 ```
 

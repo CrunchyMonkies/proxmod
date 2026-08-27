@@ -18,7 +18,7 @@ restarts them. Not on production, not the first time.
 ## 1. Install proxmod
 
 ```sh
-apt install ./proxmod_0.2.1_all.deb
+apt install ./proxmod_*_all.deb
 proxmod-verify
 ```
 

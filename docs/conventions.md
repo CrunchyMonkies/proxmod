@@ -181,11 +181,41 @@ hand-written approximation of it.
 
 ## 7. Commits and versions
 
-Present tense, imperative, one concern per commit. Reference `[REQ-*]` or
-`[PVE-F-nnn]` where a change is driven by one.
+**Conventional Commits**, with a repo-specific `release:` type. Present tense,
+imperative, one concern per commit. Reference `[REQ-*]` or `[PVE-F-nnn]` where a
+change is driven by one.
+
+```text
+fix(reapply): restart when the running daemons hold an old registry
+feat(ui): let extensions own an item in a config panel's menu tree
+release: 0.2.1
+```
+
+Types in use: `feat`, `fix`, `docs`, `chore`, `build`, `test`, and `release`.
+Scopes name the seam, not the file — `ui`, `verify`, `reapply`, `patch`, `exec`,
+`examples` — and are omitted when a change is genuinely repo-wide.
+
+**The body is where the work is.** A subject line says what changed; the body
+has to say what was broken and how it failed, because that is the part nobody
+can reconstruct later. Name the observable symptom, name the mechanism, and say
+what now prevents a recurrence — usually the test, by name. The commits in this
+repository's history are the specification for this; read three of them before
+writing one.
+
+`release:` commits carry two extra obligations: state which semver class was
+chosen and why it was that one rather than the next one down, and enumerate what
+the version bump touches. `$VERSION` fans out across every module, the scripts,
+`Proxmod.version` in the JS API — which feeds the asset cache-buster, so a
+missed bump serves browsers a stale file — the `Applies to:` header in every
+doc, and the example extension. `t/11-conventions.t` checks that they agree; the
+commit message says which of them the release intended to move.
 
 `0.MINOR.PATCH` until 1.0. A minor release may change proxmod internals; it will
 not silently change the meaning of a manifest field or an installed path.
+
+Release **tags** are annotated, and carry an `E2E:` line recording the QEMU run
+the release was cut from — or saying there was none, and why. `release.yml`
+will not publish without it. See [`packaging.md`](packaging.md) §10.
 
 ## 8. Adding a fact
 

@@ -21,6 +21,15 @@ sees it, that the injection puts exactly one tag in the real vendored
 unmodified when the shebang is wrong. They are the tests you run while writing
 code, and they are the whole of CI.
 
+Two of them do not run code at all. `t/11-conventions.t` and
+`t/13-invariants.t` read the repository as text and assert things about it: that
+every document opens with a status block, that every `[PVE-F-nnn]` citation
+resolves, that `$VERSION` agrees across eleven files, that the id pattern
+declared separately at four taint boundaries is the same pattern in all four.
+They live in `t/` because they should fail a push, not because they are tests in
+the same sense as the rest. What they guard is the class of defect that leaves
+the code working and a written rule quietly false.
+
 **Integration tests (`test/integration/`, `make e2e`)** run inside a QEMU VM
 with a real Proxmox VE on it. They prove the things no stub can: that a real
 `pvedaemon` — root, taint mode, `PERL5LIB` ignored — actually has our module
