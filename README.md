@@ -67,7 +67,7 @@ On a **test host** first — this loads into `pvedaemon` and `pveproxy` and
 restarts them.
 
 ```sh
-apt install ./proxmod_0.2.1_all.deb
+apt install ./proxmod_*_all.deb
 proxmod-verify                                   # exits 0 when healthy
 dpkg -V pve-manager libpve-common-perl libpve-http-server-perl   # silent
 ```
@@ -147,6 +147,15 @@ re-checked against a specific `pve-manager` version by anyone. Re-run
 `make facts` after each PVE point release and diff `docs/facts/` to see which
 assumptions moved.
 
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for how a change gets here, and
+[`AGENTS.md`](AGENTS.md) for a cold-start map of the repository — which document
+owns which subject, and the hazards worth knowing before the first edit.
+
+Found something exploitable? [`SECURITY.md`](SECURITY.md), not the issue
+tracker.
+
 ## Licence
 
-AGPL-3.0-or-later, matching Proxmox VE.
+AGPL-3.0-or-later, matching Proxmox VE. Full text in [`LICENSE`](LICENSE).

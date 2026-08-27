@@ -1,7 +1,7 @@
 Source: proxmod
 Section: admin
 Priority: optional
-Maintainer: proxmod maintainers <proxmod@localhost>
+Maintainer: proxmod maintainers <proxmod@users.noreply.github.com>
 Build-Depends:
  debhelper-compat (= 13),
  perl,

@@ -4,7 +4,7 @@ proxmod-example-hello (0.2.1) unstable; urgency=medium
     the file: ExtJS resolves the parent method through Function.caller, which
     V8 reports as null for a strict-mode caller.
 
- -- proxmod maintainers <proxmod@localhost>  Sat, 22 Aug 2026 00:00:00 +0000
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Sat, 22 Aug 2026 00:00:00 +0000
 
 proxmod-example-hello (0.2.0) unstable; urgency=medium
 
@@ -13,10 +13,10 @@ proxmod-example-hello (0.2.0) unstable; urgency=medium
     are exercised by something that ships.
   * Requires proxmod (>= 0.2.0) for that API.
 
- -- proxmod maintainers <proxmod@localhost>  Sun, 16 Aug 2026 00:00:00 +0000
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Sun, 16 Aug 2026 00:00:00 +0000
 
 proxmod-example-hello (0.1.0) unstable; urgency=medium
 
   * Initial release: reference proxmod extension.
 
- -- proxmod maintainers <proxmod@localhost>  Fri, 08 Aug 2026 00:00:00 +0000
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Sat, 08 Aug 2026 00:00:00 +0000

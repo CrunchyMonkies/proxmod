@@ -241,14 +241,16 @@ Each extension adds its own surface, and that is on the extension.
 
 ## 10. Reporting a vulnerability
 
-Open an issue at <https://github.com/CrunchyMonkies/proxmod> for anything that
-is not itself a live exploit path. For something exploitable, contact the
-maintainers privately first.
+The policy lives in [`SECURITY.md`](../SECURITY.md) at the repository root,
+which is where GitHub surfaces it and where a reporter will look first. It says
+how to open a private advisory, what is in scope, and what we do with a report.
 
-Especially interested in: any way to reach `require`, `eval` or a shell with a
-string from a file; any path where an unprivileged user's input reaches the root
-daemon without a permissions check; and any way to make the wrapper inject when
-it should refuse.
+It is deliberately not repeated here. Two copies of a reporting address is one
+copy that goes stale, and the stale one is the one someone reads at the worst
+possible moment.
+
+This document is the *why* behind that policy: the trust boundaries above are
+what make one finding severe and another cosmetic.
 
 ---
 

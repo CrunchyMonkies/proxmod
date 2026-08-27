@@ -21,7 +21,7 @@ proxmod (0.2.1) unstable; urgency=medium
     conventions, js-api and pve-internals, with the failure written out in
     troubleshooting under the error text a browser prints.
 
- -- proxmod maintainers <proxmod@localhost>  Sat, 22 Aug 2026 00:00:00 +0000
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Sat, 22 Aug 2026 00:00:00 +0000
 
 proxmod (0.2.0) unstable; urgency=medium
 
@@ -53,7 +53,7 @@ proxmod (0.2.0) unstable; urgency=medium
   * Tests: new integration test 11-registry, which removes and reinstalls the
     example extension with no --force anywhere; the purge test moves to 12.
 
- -- proxmod maintainers <proxmod@localhost>  Sun, 16 Aug 2026 00:00:00 +0000
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Sun, 16 Aug 2026 00:00:00 +0000
 
 proxmod (0.1.0) unstable; urgency=medium
 
@@ -67,4 +67,4 @@ proxmod (0.1.0) unstable; urgency=medium
   * dpkg trigger driven convergence (proxmod-reapply), so an extension package
     needs no maintainer scripts and an upgrade needs nothing reapplied.
 
- -- proxmod maintainers <proxmod@localhost>  Fri, 08 Aug 2026 00:00:00 +0000
+ -- proxmod maintainers <proxmod@users.noreply.github.com>  Sat, 08 Aug 2026 00:00:00 +0000
