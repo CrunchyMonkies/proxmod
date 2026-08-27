@@ -40,6 +40,11 @@ permissions:
 jobs:
   qemu:
     name: live PVE host
+    # The pinned actions run on Node 24, which needs Actions Runner
+    # 2.327.1 or newer. An older runner does not fail a step — it refuses
+    # to start the job, before the dependency check below ever runs, and
+    # the error names the action rather than the runner. Whoever registers
+    # this runner: check `./run.sh --version` first.
     runs-on: [self-hosted, kvm]
     timeout-minutes: 90
 

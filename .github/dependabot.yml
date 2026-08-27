@@ -13,6 +13,15 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # One PR per month, not one per action. The first run of this file opened
+    # four PRs for four one-line pins, each needing its own review of the same
+    # question — and a queue like that is what gets dependabot muted rather
+    # than read. Grouped, the PR is still attached to its cause; there is just
+    # one of it.
+    groups:
+      actions:
+        patterns:
+          - "*"
     # A SHA pin and its `# v4.4.0` comment are one fact in two places;
     # dependabot updates both, which is why the comment is worth keeping.
     commit-message:
