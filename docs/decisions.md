@@ -1,7 +1,7 @@
 # Decision log
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** each ADR names the source file that implements it and
 the test that covers it
@@ -27,6 +27,8 @@ reason is here.
 | [0009](adr/0009-verify-the-running-daemon.md) | Verify the running daemon, not a fresh process | Accepted |
 | [0010](adr/0010-pve-9-only.md) | Target Proxmox VE 9.x only | Accepted |
 | [0011](adr/0011-registry-fingerprint.md) | Fingerprint the registry a daemon loaded | Accepted |
+| [0012](adr/0012-wrap-posture-is-explicit.md) | A wrap declares its posture, and there is no default | Accepted |
+| [0013](adr/0013-cli-enforcement-is-opt-in.md) | Enforcement on the command line is opt-in, and patched | Accepted |
 
 ---
 

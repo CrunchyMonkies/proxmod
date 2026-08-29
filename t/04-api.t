@@ -6,7 +6,7 @@ use warnings;
 use lib 't/lib';
 use lib 'perl';
 
-use Test::More tests => 18;
+use Test::More tests => 26;
 use ProxmodTest qw(capture_log capture_debug_log is_tainted);
 
 use PVE::API2;
@@ -513,3 +513,270 @@ sub _dies {
     };
     return $@ || '';
 }
+
+# ---------------------------------------------------------------------------
+# Wrapping a Proxmox seam
+#
+# ADR 0001 chose runtime injection, and conventions.md §3 states the rule that
+# follows: probe before you wrap, and a seam that moved becomes a missing
+# feature and a log line rather than a stuck interface. Every extension used to
+# implement that by hand. These pin the version that does it once.
+# ---------------------------------------------------------------------------
+
+# A package with a plain sub to wrap, and a counter so a test can prove the
+# original still ran.
+{
+    package T::Plain;
+    our @CALLS;
+    sub greet { push @CALLS, [@_]; return 'proxmox' }
+
+    # Restoring the glob is the point, not the counter. Proxmod::API::_reset
+    # forgets that a seam was wrapped; it cannot unwrap it, because a symbol
+    # table replacement has no undo. A test that skipped this would find the
+    # previous subtest's hook still installed.
+    my $ORIG = \&greet;
+    sub _reset {
+        no strict 'refs'; ## no critic (ProhibitNoStrict)
+        no warnings 'redefine'; ## no critic (ProhibitNoWarnings)
+        *T::Plain::greet = $ORIG;
+        @CALLS = ();
+        return;
+    }
+}
+
+sub wrap_api {
+    my (%args) = @_;
+    return Proxmod::API->new(id => 'hello', version => '1.0.0',
+        daemon => 'pvedaemon', %args);
+}
+
+# A registered API method to wrap, rebuilt per test because the registry is
+# process-global.
+sub seam_method {
+    my $api = wrap_api();
+    capture_log(sub { $api->mount(subclass => 'T::Hello') });
+    capture_log(sub {
+        $api->add_method(method_args(name => 'seam', path => 'seam',
+            code => sub { return 'proxmox' }));
+    });
+    return $api;
+}
+
+subtest 'a wrap is installed on the live method hashref' => sub {
+    plan tests => 6;
+
+    reset_all();
+    T::Plain::_reset();
+
+    my $api = seam_method();
+    my @seen;
+
+    my ($id) = capture_log(sub {
+        $api->wrap_method(class => 'T::Hello', name => 'seam', posture => 'closed',
+            before => sub { my ($args) = @_; push @seen, $args->[0] });
+    });
+
+    is($id, 'T::Hello::seam', 'the seam id defaults to Class::name');
+
+    my $info = T::Hello->map_method_by_name('seam');
+    is(T::Hello->handle($info, { a => 1 }), 'proxmox',
+        'the original answer is what the caller gets');
+    is_deeply(\@seen, [{ a => 1 }], 'and the hook saw the parameters');
+
+    my ($seam) = @{ Proxmod::API::seams() };
+    is($seam->{wrapped}, 1, 'the ledger records it as wrapped');
+    is($seam->{ext}, 'hello', 'against the extension that asked');
+    is($seam->{reason}, undef, 'with nothing to explain');
+};
+
+subtest 'only the code ref is touched' => sub {
+    plan tests => 5;
+
+    reset_all();
+    my $api = seam_method();
+
+    my $info = T::Hello->map_method_by_name('seam');
+    my %before = map { $_ => $info->{$_} } qw(name path method permissions returns);
+
+    capture_log(sub {
+        $api->wrap_method(class => 'T::Hello', name => 'seam', posture => 'open',
+            before => sub { });
+    });
+
+    # A wrap that alters the API surface is a compatibility break dressed up as
+    # a policy. The schema, the permissions block, the protected flag and the
+    # return type belong to Proxmox.
+    is($info->{$_}, $before{$_}, "$_ is untouched") for sort keys %before;
+};
+
+subtest 'the wrap is reached through both call styles' => sub {
+    plan tests => 2;
+
+    reset_all();
+    my $api = seam_method();
+
+    my $hits = 0;
+    capture_log(sub {
+        $api->wrap_method(class => 'T::Hello', name => 'seam', posture => 'closed',
+            before => sub { $hits++ });
+    });
+
+    # The REST server's call.
+    T::Hello->handle(T::Hello->map_method_by_name('seam'), {});
+    is($hits, 1, 'handle($info, ...) goes through the wrap');
+
+    # The class method, which does not exist as a sub until AUTOLOAD installs
+    # one — closing over the SAME $info hashref [PVE-F-054]. Wrapping one of
+    # these and missing the other is the failure this design most invites.
+    T::Hello->seam({});
+    is($hits, 2, 'and so does the lazily created class method');
+};
+
+subtest 'posture decides whether a dying hook refuses the call' => sub {
+    plan tests => 5;
+
+    reset_all();
+    T::Plain::_reset();
+    my $api = wrap_api();
+
+    # open: our half is optional; theirs is not.
+    capture_log(sub {
+        $api->wrap_sub(package => 'T::Plain', name => 'greet', posture => 'open',
+            before => sub { die "hook exploded\n" });
+    });
+
+    my ($answer, $log) = capture_log(sub { T::Plain::greet('x') });
+    is($answer, 'proxmox', 'open: the original answer still reaches the caller');
+    is(scalar @T::Plain::CALLS, 1, 'and the original ran');
+    like($log, qr/wrapper failed/, 'with the failure recorded');
+
+    # closed: the hook's death is the point.
+    reset_all();
+    T::Plain::_reset();
+    $api = wrap_api();
+
+    capture_log(sub {
+        $api->wrap_sub(package => 'T::Plain', name => 'greet', posture => 'closed',
+            before => sub { die "refused\n" });
+    });
+
+    my $err = _dies(sub { T::Plain::greet('x') });
+    like($err, qr/refused/, 'closed: the refusal reaches the caller');
+    is(scalar @T::Plain::CALLS, 0, 'and the original never ran');
+};
+
+subtest 'posture is mandatory, and so is a hook' => sub {
+    plan tests => 4;
+
+    reset_all();
+    my $api = seam_method();
+
+    # ADR 0006's argument applied to a second silent default: a hook that dies
+    # either refuses the call or is swallowed, and those are opposites.
+    like(_dies(sub { $api->wrap_method(class => 'T::Hello', name => 'seam',
+                before => sub { }) }),
+        qr/must carry a 'posture'/, 'an omitted posture is refused');
+
+    like(_dies(sub { $api->wrap_method(class => 'T::Hello', name => 'seam',
+                posture => 'maybe', before => sub { }) }),
+        qr/must carry a 'posture'/, 'and so is one PVE would not recognise');
+
+    like(_dies(sub { $api->wrap_method(class => 'T::Hello', name => 'seam',
+                posture => 'open') }),
+        qr/slower call to the same function/, 'a wrap with no hook is refused');
+
+    is(scalar @{ Proxmod::API::seams() }, 0, 'and none of them reached the ledger');
+};
+
+subtest 'a missing seam is logged once, left unwrapped, and costs only itself'
+    => sub {
+    plan tests => 6;
+
+    reset_all();
+    my $api = seam_method();
+
+    my ($id, $log) = capture_log(sub {
+        $api->wrap_method(class => 'T::Hello', name => 'moved_in_pve_10',
+            posture => 'closed', before => sub { });
+    });
+
+    like($log, qr/was not wrapped/, 'the missing seam is reported');
+    like($log, qr/other seams are unaffected/, 'and said not to be fatal');
+
+    my ($seam) = @{ Proxmod::API::seams() };
+    is($seam->{wrapped}, 0, 'the ledger records it as not wrapped');
+    like($seam->{reason}, qr/no such method/, 'with the reason PVE gave');
+
+    # The rest still install. A PVE upgrade that moves one method costs that one
+    # feature, not the extension.
+    capture_log(sub {
+        $api->wrap_method(class => 'T::Hello', name => 'seam', posture => 'closed',
+            before => sub { });
+    });
+
+    my @wrapped = grep { $_->{wrapped} } @{ Proxmod::API::seams() };
+    is(scalar @wrapped, 1, 'a later seam still wraps');
+
+    # Idempotent, like mount and add_method: a second wrap would run every hook
+    # twice, which for a quota means charging every allocation twice.
+    my $hits = 0;
+    reset_all();
+    T::Plain::_reset();
+    $api = wrap_api();
+
+    capture_log(sub {
+        $api->wrap_sub(package => 'T::Plain', name => 'greet', posture => 'open',
+            before => sub { $hits++ }) for 1 .. 3;
+    });
+    T::Plain::greet('x');
+    is($hits, 1, 'wrapping the same seam three times hooks it once');
+};
+
+subtest 'a seam meant for another daemon is skipped, not reported missing'
+    => sub {
+    plan tests => 4;
+
+    reset_all();
+    T::Plain::_reset();
+
+    my $api = wrap_api(daemon => 'pveproxy');
+
+    capture_log(sub {
+        $api->wrap_sub(package => 'T::Plain', name => 'greet', posture => 'closed',
+            daemons => ['pvedaemon'], before => sub { die "never\n" });
+    });
+
+    is(T::Plain::greet('x'), 'proxmox', 'the seam is not installed here');
+
+    my ($seam) = @{ Proxmod::API::seams() };
+    is($seam->{wrapped}, 0, 'and the ledger says so');
+
+    # "Skipped because it belongs elsewhere" and "probed and not found" are
+    # different answers, and an operator reading the ledger needs to tell them
+    # apart.
+    like($seam->{reason}, qr/not installed in pveproxy/, 'saying which daemon this is');
+    unlike($seam->{reason}, qr/no such/, 'and not claiming the seam is missing');
+};
+
+subtest 'a scope can be probed before it is mounted' => sub {
+    plan tests => 3;
+
+    reset_all();
+    my $api = wrap_api();
+
+    is($api->scope_available('cluster'), 1, 'a scope whose parent is loaded is available');
+    is($api->scope_available('nowhere'), 0, 'and one that does not exist is not');
+
+    # The case this exists for. `qm` and `pct` load the API2 classes they need
+    # and no more, so a cluster-scoped mount dies there — and because an
+    # extension registers its routes and installs its seam wraps in the same
+    # call, that would take the wraps with it. In a CLI the wraps are the whole
+    # reason for being there.
+    my $parent = $Proxmod::API::SCOPES{cluster}{parent};
+    {
+        no strict 'refs';   ## no critic (ProhibitNoStrict)
+        local @{"${parent}::ISA"} = ();
+        is($api->scope_available('cluster'), 0,
+            'a scope whose parent is absent from this process is not');
+    }
+};

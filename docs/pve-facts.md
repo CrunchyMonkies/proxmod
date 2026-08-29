@@ -623,6 +623,132 @@ through `fork_worker` rather than treating it as a style preference. Both values
 are overridable via `MAX_WORKERS` in `/etc/default/pveproxy`, so an extension
 must not assume any particular figure — only that it is small.
 
+### [PVE-F-054] `map_method_by_name` returns the live method hashref, and `AUTOLOAD` closes over it
+
+**Status:** Verified against the pinned source harvest
+(`docs/third_party/pve-common` at its submodule pin) — **not** against an ISO.
+`make facts-src` finds it; `make facts ISO=…` has not been run for this entry,
+and the ISO harvest is the authority if the two ever disagree.
+
+**Evidence.** `PVE::RESTHandler`, shipped by `libpve-common-perl`:
+
+```perl
+sub map_method_by_name {
+    my ($self, $name) = @_;
+
+    my $info = $method_by_name->{$self}->{$name};       # :376
+    die "no such method '${self}::$name'\n" if !$info;
+
+    return $info;                                       # :379 — the live hash
+}
+
+sub AUTOLOAD {
+    my ($this) = @_;
+    my $sub = $AUTOLOAD;
+    (my $method = $sub) =~ s/.*:://;
+
+    my $info = $this->map_method_by_name($method);      # :355 — same hashref
+
+    {
+        no strict 'refs';
+        *{$sub} = sub {
+            my $self = shift;
+            return $self->handle($info, @_);            # :361 — closed over
+        };
+    }
+    goto &$AUTOLOAD;
+}
+
+sub handle {
+    my ($self, $info, $param, $result_verification) = @_;
+    my $func = $info->{code};                           # :513 — read per call
+    ...
+    my $result = $func->($param);                       # :542
+}
+```
+
+**Consequence.** `map_method_by_name` hands back the *same* hashref that was
+given to `register_method` — not a copy — and `handle` reads `$info->{code}` on
+every call rather than caching it. So replacing that one field mutates the
+method for every caller at once.
+
+That covers both ways PVE reaches a method, which is the part worth stating
+plainly because missing one of them is the failure this seam most invites:
+
+- the REST server's `$class->handle($info, $param)`, which reads the field
+  directly; and
+- the class method `$class->method_name(...)`, which does not exist as a sub
+  until `AUTOLOAD` lazily installs one — and the sub it installs closes over the
+  **same** `$info`, so it dispatches through the replaced field too.
+
+A wrap installed once therefore needs no second installation for the class-method
+form, and — importantly — cannot be defeated by a caller that happens to use the
+other style. `Proxmod::API::wrap_method` is built on this, and replaces
+`$info->{code}` and nothing else: the schema, `permissions`, `protected` and
+`returns` belong to Proxmox and a wrap that changed them would be a
+compatibility break dressed up as a policy.
+
+Note what this does **not** reach. The replacement lives in one process's memory,
+so it is present in whatever that process later forks, and absent from any
+process that did not load it — `pvesh` builds its own tree without `-MProxmod`
+and sees none of it.
+
+### [PVE-F-055] `qm`, `pct` and `pvesh` dispatch in their own process, so nothing injected into the daemons reaches them
+
+**Status:** Verified against the pinned source harvest, and reproduced on a live
+host (pve-manager 9.2.6). `make facts-src` finds the stubs; the behavioural half
+was observed rather than read, and is recorded below as what was actually run.
+
+**Evidence.** Each of the three is a stub that loads a module and dispatches:
+
+```perl
+# qemu-server/src/bin/qm, pve-container/src/pct, pve-manager/bin/pvesh
+use PVE::CLI::qm;
+PVE::CLI::qm->run_cli_handler();
+```
+
+They are not clients of `pvedaemon`. `run_cli_handler` resolves the subcommand
+against the same `PVE::API2` classes the daemons register and calls the method
+**in this process**. And the shebangs differ in a way that matters:
+
+```
+/usr/sbin/qm      #!/usr/bin/perl
+/usr/sbin/pct     #!/usr/bin/perl -T
+/usr/bin/pvesh    #!/usr/bin/perl
+```
+
+**Observed on biglarry** with `proxmod-pool-quota` installed, all eleven of its
+seams confirmed wrapped in `pvedaemon`, and `maxguests=0` on a test pool:
+
+```
+$ qm create 9999 --memory 512 --cores 1 --pool quota-test
+$ qm status 9999
+status: stopped                                            # created
+
+$ curl -XPOST .../api2/json/nodes/biglarry/qemu -d pool=quota-test ...
+{"message":"pool 'quota-test' quota: maxguests: 0 guests already assigned,
+ 1 requested, would be 1, limit 0\n","data":null}          # refused
+```
+
+**Consequence.** proxmod enters `pvedaemon` and `pveproxy` through a systemd
+`ExecStart` drop-in — the only way in, because taint mode ignores the
+environment `[PVE-F-002]` — and a command somebody types has no `ExecStart`. So neither an injected route nor an injected wrap exists in a CLI:
+this is the same root cause as `pvesh` being unable to see proxmod's endpoints,
+seen from the other side.
+
+It bounds what any runtime-injected enforcement can claim. Wrapping an API method
+covers the web interface, every REST client and every scoped-token automation,
+because all of those arrive through the daemons. It does not cover a root shell,
+and cannot — the CLI process would have to be reached too.
+
+Two mechanisms were considered and only one works. `PERL5OPT` is out: taint mode
+ignores it `[PVE-F-002]`, and `pct` is `-T` while the other two are not, so it
+would enforce on VMs and silently not on containers. What is left is loading
+proxmod from the file the CLI itself loads — `PVE::CLI::qm` and its siblings,
+which sit under `Proxmod::Patch`'s existing allowed roots while the binaries in
+`/usr/sbin` do not. That is [ADR 0013](adr/0013-cli-enforcement-is-opt-in.md), and
+the specs ship disabled.
+
 ---
 
 ## Not yet verified

@@ -34,7 +34,7 @@
 use strict;
 use warnings;
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 # Honoured only for a non-root caller, so it is inert in production. t/10 uses
 # it to point every path at a temporary tree.
@@ -598,7 +598,9 @@ sub check_structure {
     my @unloadable;
     for my $ext (@backend) {
         my $r = eval { Proxmod::Backend::install('pvedaemon', [$ext]) };
-        push @unloadable, $ext->{id} if !$r || $r->{failed};
+        # install() answers with the ids that failed, not a count: an empty
+        # arrayref is still true, so this has to ask how many are in it.
+        push @unloadable, $ext->{id} if !$r || @{ $r->{failed} };
     }
 
     if (@unloadable) {
@@ -634,6 +636,45 @@ sub check_structure {
     ok_('structure', scalar(@$routes) . ' registered route(s) replayed;'
         . ' each resolves to the extension that registered it',
         join(', ', map { "$_->{method} $_->{route}" } @$routes)) if !$bad;
+
+    _check_seams();
+
+    return;
+}
+
+# Which Proxmox seams this build wraps, and which it could not find.
+#
+# The same question @routes answers for endpoints, asked about the other half of
+# what proxmod does. A wrap that could not be installed logs one line at load
+# time, and by the time somebody wonders whether a Proxmox upgrade moved a
+# method that line is long gone from the journal — so an operator asking "is
+# this actually being enforced right now" has nowhere else to look.
+#
+# Wrapping happens during registration, so the replay above has already
+# installed whatever the loadable extensions ask for.
+sub _check_seams {
+    my $seams = Proxmod::API::seams();
+
+    if (!@$seams) {
+        info_('structure', 'no extension wraps a Proxmox seam');
+        return;
+    }
+
+    my @wrapped = grep { $_->{wrapped} } @$seams;
+    my @missing = grep { !$_->{wrapped} } @$seams;
+
+    # Not an error. A seam that is gone degrades whatever depended on it and
+    # leaves everything else working, which is the design — but it is exactly
+    # the thing nobody finds out about otherwise.
+    warn_('structure', scalar(@missing) . ' of ' . scalar(@$seams)
+        . ' seam(s) are not wrapped in this replay',
+        join('; ', map { "$_->{id} ($_->{ext}): " . ($_->{reason} // 'unknown') }
+            @missing))
+        if @missing;
+
+    ok_('structure', scalar(@wrapped) . ' Proxmox seam(s) wrapped',
+        join(', ', map { "$_->{ext}:$_->{id} [$_->{posture}]" } @wrapped))
+        if @wrapped;
 
     return;
 }

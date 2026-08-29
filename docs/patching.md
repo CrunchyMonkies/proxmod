@@ -1,7 +1,7 @@
 # Patching Proxmox files: the last resort
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the post-mortem in §2 cites file and line in
 `~/dev/pmxxpuiov` as it stood on 2026-08-08 and each defect was read directly;
@@ -211,6 +211,69 @@ The only way out is to not need a reapply mechanism, which is the whole design
 of proxmod: nothing to reapply, because nothing was changed.
 
 ---
+
+## 2a. The one patch proxmod recommends
+
+Everything above argues against patching, and everything above still holds. There
+is exactly one case where proxmod ships specs it expects somebody to enable, and
+it is worth understanding why this one is different from the example spec.
+
+`patches/60-cli-qm.conf`, `61-cli-pct.conf` and `62-cli-pvesh.conf` insert
+`use Proxmod;` into `PVE::CLI::qm`, `::pct` and `::pvesh`. That makes a seam wrap
+apply to `qm create` and not only to the REST API. Without it, an extension that
+refuses an over-quota create refuses it through the web interface and lets it
+through from a root shell — verified on a live host, same node and same second
+`[PVE-F-055]`.
+
+**Why this is not the example spec.** The example patches the index template,
+which proxmod already does at runtime without touching the file: patching there
+gives up every guarantee in exchange for nothing. Here there is **no runtime
+alternative**. proxmod enters a daemon through a systemd `ExecStart` drop-in, and
+a command somebody types has no `ExecStart`. This is precisely the case
+[ADR 0008](adr/0008-patch-facility-ships-inert.md) predicted: a seam proxmod
+cannot reach at runtime.
+
+**What you take on.** All of §1's obligations, plus two specific to this:
+
+- `dpkg -V qemu-server pve-container pve-manager` stops being silent for three
+  files. That is proxmod's strongest claim about itself, spent here deliberately.
+- Every `qm` invocation now loads proxmod and every extension that named `qm`.
+  **If proxmod is broken, `qm` is broken** — the primary tool for managing guests
+  on the node. Three things carry that, and it is worth knowing them before you
+  need them: `Proxmod.pm`'s `INIT` block is wrapped in an `eval` and never dies,
+  each extension loads inside its own `eval`, and `/etc/proxmod/disabled` turns
+  the lot off without removing a package.
+
+**Two costs that are smaller than they sound, and one that is not.**
+
+*Startup* is fine. Measured on a live host (pve-manager 9.2.6, two extensions
+loaded): ten `qm list` invocations took 8.19 s and 8.11 s unpatched, 8.36 s
+patched — about **20 ms per invocation, roughly 2%**. If you run `qm` in a tight
+loop thousands of times a day, measure it yourself; for everyone else it is
+noise.
+
+*`stdout` is untouched.* `pvesh get /version --output-format json` is unpolluted
+JSON with the patch on. Scripts that parse output keep working.
+
+*`stderr` is not.* Every invocation of a patched CLI prints proxmod's boot lines,
+and any warning an extension emits at registration — a seam it could not wrap,
+a scope it could not mount — appears **on every command**, not once at boot. On
+this host `pct` printed two such warnings each time, both correct and both
+expected. Nothing is broken by it, but an operator who has not seen it before
+will reasonably think something is.
+
+**One thing this does not do.** `pvesh` still cannot `get` proxmod's own
+endpoints, only `ls` them: `PVE::CLI::pvesh` extracts the schema for the
+requested path while the program is still compiling, which is before proxmod's
+`INIT` has mounted anything. Enforcement in `pvesh` works regardless — a
+`pvesh create` into an over-quota pool is refused — because the wraps are
+installed by then and the command runs afterwards. See
+[ADR 0013](adr/0013-cli-enforcement-is-opt-in.md).
+
+Leaving all three disabled is a perfectly good answer. A quota is a boundary for
+*delegated* callers — the web interface, API clients, scoped automation — and
+anyone who can run `qm create` can also edit the guest config directly or remove
+the package.
 
 ## 3. If you still need a patch
 

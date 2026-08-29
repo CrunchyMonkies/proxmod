@@ -10,7 +10,7 @@ use Proxmod::Log qw(log_debug log_warn);
 # rather than part-way through reading the registry.
 use JSON::PP ();
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 # The extension registry: which extensions exist, and in what order they load.
 #
@@ -50,6 +50,42 @@ sub known_daemons { return sort keys %KNOWN_DAEMONS }
 sub is_known_daemon {
     my ($name) = @_;
     return (defined($name) && $KNOWN_DAEMONS{$name}) ? 1 : 0;
+}
+
+# The command-line tools, which are a different kind of host and are treated as
+# one throughout rather than folded in above.
+#
+# They dispatch to the same PVE::API2 classes the daemons do, in their own
+# process — `qm` is eight lines that load PVE::CLI::qm and call
+# run_cli_handler. So an extension that wraps an API method has exactly the
+# same seam available here, and a create issued from a root shell goes through
+# the same code a create from the web interface does.
+#
+# What they do NOT share is how proxmod gets in. A daemon is started through
+# proxmod-exec's ExecStart drop-in; a CLI is a program somebody typed, and the
+# only way into it is a `use Proxmod;` in the module it loads — which means
+# editing a file Proxmox owns. That is why nothing loads here by default and
+# why the patch specs that arrange it ship disabled: see docs/patching.md and
+# ADR 0013.
+#
+# Kept separate from %KNOWN_DAEMONS because the difference matters at every
+# site that consults it. A CLI has a real terminal, so its log output belongs
+# there and not in syslog; it renders no pages, so the frontend stage must not
+# run; and it is a transient process, so nothing durable may be recorded from
+# it.
+my %KNOWN_CLIS = map { $_ => 1 } qw(qm pct pvesh);
+
+sub known_clis { return sort keys %KNOWN_CLIS }
+
+sub is_known_cli {
+    my ($name) = @_;
+    return (defined($name) && $KNOWN_CLIS{$name}) ? 1 : 0;
+}
+
+# Anywhere proxmod is willing to load at all.
+sub is_known_host {
+    my ($name) = @_;
+    return (is_known_daemon($name) || is_known_cli($name)) ? 1 : 0;
 }
 
 my $RE_ID     = qr/\A([a-z0-9][a-z0-9_-]{0,63})\z/;
@@ -160,11 +196,20 @@ sub _parse_manifest {
             } else {
                 my %daemons;
                 my $wanted = _as_list($be->{daemons});
+
+                # The default is DAEMONS ONLY, and deliberately does not
+                # include the CLIs. Every extension written before they were
+                # accepted here omits this key, and none of them was written
+                # with `qm` in mind — an upgrade must not start loading them
+                # into a command somebody types, least of all one that then
+                # wraps a method and can refuse it.
                 $wanted = [ sort keys %KNOWN_DAEMONS ] if !@$wanted;
+
                 for my $d (@$wanted) {
-                    if (!defined($d) || !$KNOWN_DAEMONS{$d}) {
-                        log_warn("$id: unknown daemon '" . ($d // 'undef')
-                            . "' in 'backend.daemons', ignoring it");
+                    if (!defined($d) || !is_known_host($d)) {
+                        log_warn("$id: unknown host '" . ($d // 'undef')
+                            . "' in 'backend.daemons', ignoring it (known: "
+                            . join(', ', known_daemons(), known_clis()) . ')');
                         next;
                     }
                     $daemons{$d} = 1;

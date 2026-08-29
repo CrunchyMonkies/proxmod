@@ -200,3 +200,26 @@ sub check_api2_permissions {
 416:            my $fd = $info->{fragmentDelimiter};
 420:                die "unsupported fragmentDelimiter '$fd'"
 
+=== [PVE-F-055] the CLI stubs dispatch in their own process ===
+1:#!/usr/bin/perl
+6:use PVE::CLI::qm;
+8:PVE::CLI::qm->run_cli_handler();
+1:#!/usr/bin/perl -T
+6:use PVE::CLI::pct;
+8:PVE::CLI::pct->run_cli_handler();
+1:#!/usr/bin/perl
+6:use PVE::CLI::pvesh;
+8:PVE::CLI::pvesh->run_cli_handler();
+
+=== [PVE-F-054] map_method_by_name returns the live hashref; AUTOLOAD closes over it ===
+333:    $method_by_name->{$self} = {} if !defined($method_by_name->{$self});
+337:            if defined($method_by_name->{$self}->{ $info->{name} });
+339:        $method_by_name->{$self}->{ $info->{name} } = $info;
+347:sub AUTOLOAD {
+361:            return $self->handle($info, @_);
+373:sub map_method_by_name {
+376:    my $info = $method_by_name->{$self}->{$name};
+513:    my $func = $info->{code};
+542:    my $result = $func->($param); # the actual API code execution call
+1126:        $res = $self->handle($info, $param, 1);
+

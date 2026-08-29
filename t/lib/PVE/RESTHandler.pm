@@ -5,8 +5,9 @@ use warnings;
 
 # A test double for Proxmox's PVE::RESTHandler.
 #
-# PROVENANCE. register_method(), map_path_to_methods() and find_handler() below
-# are copied from pve-manager 9.1.1's libpve-common-perl
+# PROVENANCE. register_method(), map_path_to_methods(), find_handler(),
+# AUTOLOAD() and DESTROY() below are copied from pve-manager 9.1.1's
+# libpve-common-perl
 # (/usr/share/perl5/PVE/RESTHandler.pm), with only the syslog call replaced.
 # They are not a reimplementation and must not be "improved": the whole point of
 # this file is that Proxmod::API's tests run against Proxmox's real registration
@@ -20,6 +21,8 @@ use warnings;
 # Everything else here (handle, the accessors, _reset) is deliberately a stub:
 # proxmod does not exercise PVE's JSON Schema validation or its CLI formatting,
 # and pulling those in would drag most of libpve-common-perl into a unit test.
+
+our $AUTOLOAD; # it's a package global
 
 my $method_registry = {};
 my $method_by_name = {};
@@ -201,6 +204,34 @@ sub map_method_by_name {
     my $info = $method_by_name->{$self}->{$name};
     die "no such method '${self}::$name'\n" if !$info;
     return $info;
+}
+
+# COPIED, and load-bearing for [PVE-F-054]. AUTOLOAD closes over the SAME $info
+# hashref that map_method_by_name hands back, so a wrap installed on
+# $info->{code} is reached both through handle($info, ...) and through the class
+# method PVE lazily installs on first call. Without this here, no test could
+# cover the second call style — and wrapping one while missing the other is the
+# failure Proxmod::API::wrap_method's design most invites.
+sub DESTROY { }    # avoid problems with autoload
+
+sub AUTOLOAD {
+    my ($this) = @_;
+
+    # also see "man perldiag"
+
+    my $sub = $AUTOLOAD;
+    (my $method = $sub) =~ s/.*:://;
+
+    my $info = $this->map_method_by_name($method);
+
+    {
+        no strict 'refs'; ## no critic (ProhibitNoStrict)
+        *{$sub} = sub {
+            my $self = shift;
+            return $self->handle($info, @_);
+        };
+    }
+    goto &$AUTOLOAD;
 }
 
 # STUB. The real handle() validates $param against the method's JSON Schema,

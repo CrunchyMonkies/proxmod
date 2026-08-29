@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-08
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** [`debian/proxmod.triggers`](../../debian/proxmod.triggers)
 and [`exec/proxmod-reapply`](../../exec/proxmod-reapply); tested in `t/09-reapply.t`

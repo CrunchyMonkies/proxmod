@@ -132,8 +132,8 @@ subtest 'with no frontend extension, nothing is wrapped at all' => sub {
     # wants a frontend, proxmod is not in the request path at any point.
     my ($result) = capture_debug_log(sub { Proxmod::Frontend::install([]) });
 
-    is($result->{loaded}, 0, 'nothing loaded');
-    is($result->{failed}, 0, 'nothing failed');
+    is_deeply($result->{loaded}, [], 'nothing loaded');
+    is_deeply($result->{failed}, [], 'nothing failed');
     is(\&PVE::Service::pveproxy::get_index, $ORIG_INDEX, 'get_index is untouched');
     is(\&PVE::Service::pveproxy::init, $ORIG_INIT, 'init is untouched');
     is(serve_index(), $INDEX, 'the index is byte-for-byte what Proxmox rendered');
@@ -148,7 +148,7 @@ subtest 'a backend-only extension does not drag in the frontend' => sub {
         Proxmod::Frontend::install([{ id => 'be', backend => { module => 'X' } }]);
     });
 
-    is($result->{loaded}, 0, 'it is not counted as a frontend extension');
+    is_deeply($result->{loaded}, [], 'it is not counted as a frontend extension');
     is(serve_index(), $INDEX, 'and the index is untouched');
 };
 
@@ -159,8 +159,8 @@ subtest 'the happy path injects exactly one tag' => sub {
 
     my ($result, $log) = capture_log(sub { Proxmod::Frontend::install([ext()]) });
 
-    is($result->{loaded}, 1, 'the extension is loaded');
-    is($result->{failed}, 0, 'nothing failed');
+    is_deeply($result->{loaded}, ['hello'], 'the extension is loaded, by name');
+    is_deeply($result->{failed}, [], 'nothing failed');
     like($log, qr{frontend ready}, 'the journal says so');
 
     my $body = serve_index();
@@ -316,8 +316,8 @@ subtest 'an asset that is not installed is dropped, loudly' => sub {
             frontend => { assets => ['not-shipped.js'] })]);
     });
 
-    is($result->{loaded}, 0, 'the extension is not counted as loaded');
-    is($result->{failed}, 1, 'it is counted as failed');
+    is_deeply($result->{loaded}, [], 'the extension is not counted as loaded');
+    is_deeply($result->{failed}, ['ghost'], 'it is counted as failed');
     like($log, qr{ghost: asset not installed}, 'the journal names the extension and the file');
     unlike(Proxmod::Frontend::loader_body(Proxmod::Frontend::assets()),
         qr{not-shipped\.js}, 'and the loader does not mention it');
@@ -343,7 +343,7 @@ subtest 'asset names that could escape the www directory are refused' => sub {
         Proxmod::Frontend::install([ext(id => 'nasty', frontend => { assets => \@bad })]);
     });
 
-    is($result->{failed}, 1, 'the extension is dropped');
+    is_deeply($result->{failed}, ['nasty'], 'the extension is dropped');
     like($log, qr{refusing to serve asset}, 'each refusal is logged');
 
     my $body = Proxmod::Frontend::loader_body(Proxmod::Frontend::assets());
@@ -368,8 +368,8 @@ subtest 'a missing seam costs the frontend and nothing else' => sub {
 
     my ($result, $log) = capture_log(sub { Proxmod::Frontend::install([ext()]) });
 
-    is($result->{loaded}, 0, 'no extension is reported as loaded');
-    is($result->{failed}, 1, 'every frontend extension is reported as failed');
+    is_deeply($result->{loaded}, [], 'no extension is reported as loaded');
+    is_deeply($result->{failed}, ['hello'], 'every frontend extension is reported as failed');
     like($log, qr{index injection: not installed}, 'the journal says which half failed');
     is_deeply(Proxmod::Frontend::assets(), [],
         'and the asset list is emptied so the routes serve nothing');

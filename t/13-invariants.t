@@ -117,7 +117,7 @@ subtest 'the package-name pattern is the same in Registry and API' => sub {
 
 subtest 'proxmod-verify asks the frontend question the way Frontend answers it' =>
 sub {
-    plan tests => 3;
+    plan tests => 4;
 
     # "Does this host want a loader tag" is decided in Frontend::install, and
     # asked again in proxmod-verify::frontend_wanted — which cannot call the
@@ -136,6 +136,14 @@ sub {
 
     my $wanted = body('bin/proxmod-verify', 'frontend_wanted');
     like($wanted, $expr, 'proxmod-verify frontend_wanted uses the same predicate');
+
+    # A third copy, in Boot::boot. It exists for the case where the frontend
+    # stage died — which is to say the case where Proxmod::Frontend could not
+    # be loaded and so cannot be asked which extensions it wanted. If it drifts,
+    # a daemon whose frontend seam is gone reports the wrong set of extensions
+    # as failed, in the line proxmod-verify treats as the source of truth.
+    my $boot = body('perl/Proxmod/Boot.pm', 'boot');
+    like($boot, $expr, 'Boot::boot uses the same predicate to name what a dead frontend stage cost');
 };
 
 subtest 'the two drop-ins say the same thing about both daemons' => sub {

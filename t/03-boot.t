@@ -6,7 +6,7 @@ use warnings;
 use lib 't/lib';
 use lib 'perl';
 
-use Test::More tests => 33;
+use Test::More tests => 44;
 use ProxmodTest qw(tempdir write_file capture_log);
 
 use Proxmod::Boot;
@@ -30,24 +30,42 @@ BEGIN {
 
 sub Proxmod::Frontend::install {
     push @frontend_calls, [@_];
-    return ref($frontend_result) eq 'CODE' ? $frontend_result->() : $frontend_result;
+    return ref($frontend_result) eq 'CODE' ? $frontend_result->(@_) : $frontend_result;
 }
 
 sub Proxmod::Backend::install {
     push @backend_calls, [@_];
-    return ref($backend_result) eq 'CODE' ? $backend_result->() : $backend_result;
+    return ref($backend_result) eq 'CODE' ? $backend_result->(@_) : $backend_result;
+}
+
+# The real stages answer with the ids of the extensions they brought up, so the
+# stubs have to as well: a fixed answer would not exercise the union boot() does
+# and would hide the case this whole file is careful about, an extension that is
+# in both answers at once.
+sub frontend_loads_everything {
+    my ($exts) = @_;
+    my @wanted = grep { $_->{frontend} && @{ $_->{frontend}{assets} || [] } } @$exts;
+    return { loaded => [ map { $_->{id} } @wanted ], failed => [] };
+}
+
+sub backend_loads_everything {
+    my ($daemon, $exts) = @_;
+    return { loaded => [ map { $_->{id} } @$exts ], failed => [] };
 }
 
 my $root = tempdir();
 
 # Run boot() in a controlled world: a fresh boot guard, an extension registry we
 # supply, and a kill-switch path that does not exist unless a test creates it.
+# What boot() left $Proxmod::Log::SYSLOG at, for the block at the end.
+my $syslog_after;
+
 sub run_boot {
     my ($daemon, %opt) = @_;
 
     @frontend_calls = @backend_calls = ();
-    $frontend_result = $opt{frontend_result} // { loaded => 1, failed => 0 };
-    $backend_result  = $opt{backend_result}  // { loaded => 1, failed => 0 };
+    $frontend_result = $opt{frontend_result} // \&frontend_loads_everything;
+    $backend_result  = $opt{backend_result}  // \&backend_loads_everything;
 
     my $dir = "$root/ext-" . (($opt{tag} // 'x'));
     mkdir $dir;
@@ -57,12 +75,19 @@ sub run_boot {
 
     Proxmod::Boot::_reset();
 
+    # boot() sets $Proxmod::Log::SYSLOG as a side effect and does not localise
+    # it, so the harness has to, or one case's answer becomes the next one's
+    # starting point.
+    local $Proxmod::Log::SYSLOG = 0;
+
     my (undef, $log) = capture_log(sub {
         local $Proxmod::Boot::DISABLED_FILE = $opt{disabled_file} // "$root/no-such-kill-switch";
         local @Proxmod::Registry::EXT_DIRS = ($dir);
         Proxmod::Boot::boot($daemon);
         return 1;
     });
+
+    $syslog_after = $Proxmod::Log::SYSLOG;
 
     return $log;
 }
@@ -83,8 +108,11 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
 {
     my $log = run_boot('pveproxy', tag => 'happy', manifests => { '50-hello.conf' => $HELLO });
 
-    like($log, qr/^proxmod: booted daemon=pveproxy extensions=2 failed=0 registry=[0-9a-f]{12}$/m,
-        'pveproxy reports both stages loaded');
+    # The field is named extensions=, and hello is one extension. It declares
+    # both a frontend and a backend half and pveproxy runs both of them, which
+    # is precisely the case that used to be reported as two.
+    like($log, qr/^proxmod: booted daemon=pveproxy extensions=1 failed=0 registry=[0-9a-f]{12}$/m,
+        'an extension running both of its halves is counted once, not once per stage');
     is(scalar(@frontend_calls), 1, 'the frontend is installed in pveproxy');
     is(scalar(@backend_calls), 1, 'the backend is installed in pveproxy');
     is(scalar(@{ $backend_calls[0][1] }), 1, 'the matching extension is passed to the backend');
@@ -95,7 +123,7 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
     my $log = run_boot('pvedaemon', tag => 'daemon', manifests => { '50-hello.conf' => $HELLO });
 
     like($log, qr/^proxmod: booted daemon=pvedaemon extensions=1 failed=0 registry=[0-9a-f]{12}$/m,
-        'pvedaemon reports one stage loaded');
+        'and pvedaemon, running only its backend half, reports the same one');
     # pvedaemon never renders a page. Wrapping the UI seam there would be pure
     # risk for no benefit.
     is(scalar(@frontend_calls), 0, 'the frontend is not installed in pvedaemon');
@@ -121,6 +149,30 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
     is(scalar(@frontend_calls), 1, 'but it is passed to the frontend stage');
 }
 
+# The two numbers are a partition: every extension this daemon is responsible
+# for lands in exactly one of them, so extensions= + failed= is the count of
+# extensions applicable here. Two extensions, one declaring both halves and one
+# backend-only, and the backend-only one fails to register.
+{
+    my $log = run_boot('pveproxy', tag => 'mixed',
+        manifests => {
+            '50-hello.conf' => $HELLO,
+            '51-beonly.conf' => '{"id":"beonly","backend":{"module":"Acme::Be"}}',
+        },
+        backend_result => sub {
+            my ($daemon, $exts) = @_;
+            my @ids = map { $_->{id} } @$exts;
+            return {
+                loaded => [ grep { $_ ne 'beonly' } @ids ],
+                failed => [ grep { $_ eq 'beonly' } @ids ],
+            };
+        },
+    );
+
+    like($log, qr/^proxmod: booted daemon=pveproxy extensions=1 failed=1 registry=[0-9a-f]{12}$/m,
+        'two extensions, one of them broken, are reported as one and one');
+}
+
 # --- the kill switch ------------------------------------------------------
 
 {
@@ -144,8 +196,12 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
 
     like($log, qr/^proxmod: error: frontend injection failed, continuing without it: frontend exploded$/m,
         'a frontend failure is reported');
-    like($log, qr/^proxmod: booted daemon=pveproxy extensions=1 failed=1 registry=[0-9a-f]{12}$/m,
-        'the backend still loads and the failure is counted');
+    # The backend half did register — @backend_calls below says so — but hello
+    # is one extension and half of it is missing. Reporting it as both loaded
+    # and failed is what summing the stages did; the administrator reading this
+    # is asking whether anything needs looking at, and the answer is yes.
+    like($log, qr/^proxmod: booted daemon=pveproxy extensions=0 failed=1 registry=[0-9a-f]{12}$/m,
+        'an extension that lost one half is counted once, as failed');
     is(scalar(@backend_calls), 1, 'the backend stage still ran');
 }
 
@@ -192,7 +248,8 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
 {
     Proxmod::Boot::_reset();
     @frontend_calls = @backend_calls = ();
-    $frontend_result = $backend_result = { loaded => 1, failed => 0 };
+    $frontend_result = \&frontend_loads_everything;
+    $backend_result  = \&backend_loads_everything;
 
     my $dir = "$root/ext-twice";
     mkdir $dir;
@@ -210,4 +267,67 @@ is(Proxmod::Boot::daemon_name(''), undef, 'an empty $0 is refused');
     is(scalar(@booted), 1, 'boot() runs its work exactly once');
     is(scalar(@frontend_calls), 1, 'the frontend is not installed twice');
     is(scalar(@backend_calls), 1, 'the backend is not registered twice');
+}
+
+# --- the command-line tools -----------------------------------------------
+
+# A CLI dispatches to the same PVE::API2 classes a daemon does, in its own
+# process, so an extension that wraps an API method has the same seam there —
+# and a `qm create` from a root shell goes through the same code a create from
+# the web interface does. What differs is that proxmod only reaches a CLI
+# because an operator enabled a patch (ADR 0013), so nothing loads there unless
+# the extension asked for it by name.
+
+my $CLI_EXT = '{"id":"cli","backend":{"module":"Acme::Hello",'
+    . '"daemons":["pvedaemon","qm"]},"frontend":{"assets":["hello.js"]}}';
+
+{
+    my $log = run_boot('qm', tag => 'cli', manifests => { '50-cli.conf' => $CLI_EXT });
+
+    like($log, qr/^proxmod: booted daemon=qm extensions=1 failed=0 registry=[0-9a-f]{12}$/m,
+        'proxmod loads inside a command-line tool that an extension named');
+    is(scalar(@backend_calls), 1, 'the backend stage runs there');
+    is($backend_calls[0][0], 'qm', 'and is told which host it is in');
+
+    # A CLI renders no pages. Running the UI seam there would be pure risk for
+    # no gain, exactly as in pvedaemon.
+    is(scalar(@frontend_calls), 0, 'the frontend stage does not');
+}
+
+{
+    # The default has to hold: $HELLO names no daemons, so it must not appear
+    # in a CLI even though it would in both daemons.
+    my $log = run_boot('qm', tag => 'cli-default', manifests => { '50-hello.conf' => $HELLO });
+
+    like($log, qr/^proxmod: booted daemon=qm extensions=0 failed=0 registry=[0-9a-f]{12}$/m,
+        'an extension that did not name a CLI is not loaded into one');
+}
+
+{
+    my $log = run_boot('rsync', tag => 'stranger', manifests => { '50-cli.conf' => $CLI_EXT });
+
+    # Asserted by what did not happen rather than by the log line, which is a
+    # debug one: proxmod ran no stage at all, which is the property that
+    # matters to a program that merely happened to load us.
+    is(scalar(@backend_calls) + scalar(@frontend_calls), 0,
+        'a program that merely loaded us gets nothing at all');
+    unlike($log, qr/booted/, 'and does not even report having booted');
+}
+
+# --- where log output goes ------------------------------------------------
+
+# PVE::Daemon reopens stderr on /dev/null once it detaches (Daemon.pm:313-337),
+# so a daemon's output has to go to syslog or it goes nowhere. A CLI has a real
+# terminal and its output belongs there — and since proxmod is only in a CLI
+# because somebody patched it in, taking over `qm`'s stderr would be a rude way
+# to repay that.
+{
+    run_boot('pvedaemon', tag => 'sl-daemon', manifests => { '50-hello.conf' => $HELLO });
+    is($syslog_after, 1, 'pvedaemon logs to syslog');
+
+    run_boot('qm', tag => 'sl-cli', manifests => { '50-cli.conf' => $CLI_EXT });
+    is($syslog_after, 0, 'a CLI keeps the terminal it was run from');
+
+    run_boot('rsync', tag => 'sl-stranger');
+    is($syslog_after, 0, 'and so does anything else that loaded us');
 }

@@ -6,14 +6,28 @@ use warnings;
 use Exporter 'import';
 our @EXPORT_OK = qw(log_debug log_info log_warn log_error);
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 # Logging for code running inside pvedaemon and pveproxy.
 #
-# systemd wires both daemons' output to the journal, so STDERR *is* the log:
-# nothing to rotate, no permissions to get wrong, and extension problems appear
-# next to the PVE messages that explain them. `journalctl -u pveproxy` is the
-# one place an administrator has to look.
+# `journalctl -u pveproxy` is the one place an administrator has to look, and
+# there are two different ways of getting there depending on when we are.
+#
+# BEFORE the daemon detaches — the INIT phase, which is where registration
+# happens — systemd still owns the process's stderr, so writing there lands in
+# the journal.
+#
+# AFTER it detaches, it does not. PVE::Daemon reopens STDOUT on /dev/null and
+# then STDERR onto STDOUT (`Daemon.pm:313-337`), so both are /dev/null for the
+# master and every worker it forks. Anything written to stderr from a request
+# handler is discarded — silently, and only in production, because a test
+# harness and a CLI both still have a real stderr. That cost pool-quota its
+# refusal log: the wrap fired, the caller got a 403, and the journal said
+# nothing at all.
+#
+# So inside a daemon we use syslog, which PVE has already opened for us with the
+# right tag and facility (`Daemon.pm:244` calls initlog). Proxmod::Boot sets
+# $SYSLOG when it installs; CLI tools never do, and keep their stderr.
 #
 # Every line is prefixed "proxmod:". That prefix is contract, not decoration —
 # proxmod-verify decides whether the live daemon actually loaded us by grepping
@@ -30,8 +44,20 @@ our $PREFIX = 'proxmod';
 # Overridable so the unit tests can point at a fixture instead of /etc.
 our $CONF_FILE = '/etc/proxmod/proxmod.conf';
 
-# Where output goes. Tests localise this to an in-memory handle to capture it.
+# Where output goes. Tests localise this to an in-memory handle to capture it,
+# and it wins over everything below.
 our $FH;
+
+# Set by Proxmod::Boot inside pvedaemon and pveproxy. Off everywhere else, so
+# proxmod-verify and proxmodctl still talk to the terminal they were run from.
+our $SYSLOG = 0;
+
+my %SYSLOG_LEVEL = (
+    debug => 'debug',
+    info => 'info',
+    warn => 'warning',
+    error => 'err',
+);
 
 my $debug_cached;
 
@@ -79,10 +105,38 @@ sub _emit {
 
     my $line = $level eq 'info' ? "$PREFIX: $msg\n" : "$PREFIX: $level: $msg\n";
 
-    my $out = $FH || \*STDERR;
-    print {$out} $line;
+    if ($FH) {
+        print {$FH} $line;
+        return;
+    }
+
+    return if $SYSLOG && _syslog($level, $line);
+
+    print {\*STDERR} $line;
 
     return;
+}
+
+# Returns true if the line was handed to syslog.
+sub _syslog {
+    my ($level, $line) = @_;
+
+    my $priority = $SYSLOG_LEVEL{$level} || 'info';
+
+    chomp(my $msg = $line);
+
+    return eval {
+        local $SIG{__DIE__} = 'DEFAULT';
+
+        require PVE::SafeSyslog;
+
+        # '%s' and not $msg: Sys::Syslog treats the second argument as a format
+        # string, and these lines carry text an operator typed — a pool comment
+        # with a % in it would mangle the entry or worse.
+        PVE::SafeSyslog::syslog($priority, '%s', $msg);
+
+        1;
+    } ? 1 : 0;
 }
 
 sub log_debug { _emit('debug', @_) if _debug_enabled(); return }

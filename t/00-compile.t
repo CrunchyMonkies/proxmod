@@ -18,7 +18,7 @@ use ProxmodTest qw(perl_bin);
 # names: match a strict pattern and keep the capture.
 my @modules = map { m{\A([\w./-]+\.pm)\z} ? $1 : () } sort glob('perl/Proxmod/*.pm');
 plan skip_all => 'run from the repository root' if !@modules;
-plan tests => 2 * (@modules + 1) + 3 + 3 + 4;
+plan tests => 2 * (@modules + 1) + 3 + 3 + 4 + 1;
 
 my $perl = perl_bin();
 
@@ -110,3 +110,45 @@ for my $file (qw(Boot Backend Frontend API)) {
         code_lines("perl/Proxmod/$file.pm");
     ok(scalar(@hits) > 0, "Proxmod::$file localises \$SIG{__DIE__} around its eval");
 }
+
+subtest 'inside a daemon a log line goes to syslog, not to a dead stderr' => sub {
+    plan tests => 5;
+
+    require PVE::SafeSyslog;
+    require Proxmod::Log;
+
+    PVE::SafeSyslog::_reset();
+
+    # PVE::Daemon reopens STDOUT on /dev/null and STDERR onto STDOUT once the
+    # daemon detaches (Daemon.pm:313-337), so stderr from a request handler is
+    # discarded. proxmod logged there anyway, which cost pool-quota every
+    # refusal line in production while the suite and the CLI both looked fine.
+    my $stderr = '';
+    {
+        local $Proxmod::Log::SYSLOG = 1;
+        local $Proxmod::Log::FH;                 # no capture handle: the real path
+        local *STDERR;
+        open(STDERR, '>', \$stderr) or die;
+        Proxmod::Log::log_warn('a refusal nobody would have seen');
+    }
+
+    is(scalar @PVE::SafeSyslog::CALLS, 1, 'the line went to syslog');
+    is($stderr, '', 'and not to the stderr that is /dev/null in production');
+
+    my $call = $PVE::SafeSyslog::CALLS[0];
+    is($call->{priority}, 'warning', 'at a priority syslog understands');
+    like($call->{rendered}, qr/\Aproxmod: warn: a refusal nobody/,
+        'keeping the prefix proxmod-verify greps for');
+
+    # Sys::Syslog treats its second argument as a format string, and these lines
+    # carry text an operator typed — a pool comment with a % in it would mangle
+    # the entry or worse.
+    PVE::SafeSyslog::_reset();
+    {
+        local $Proxmod::Log::SYSLOG = 1;
+        local $Proxmod::Log::FH;
+        Proxmod::Log::log_warn('pool comment: 100%s of nothing %n');
+    }
+    is($PVE::SafeSyslog::CALLS[0]->{format}, '%s',
+        'the message is an argument, never the format');
+};

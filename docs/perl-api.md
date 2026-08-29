@@ -1,7 +1,7 @@
 # The Perl API
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** signatures, defaults and every `die` message below were
 read out of [`perl/Proxmod/API.pm`](../perl/Proxmod/API.pm) and
@@ -191,6 +191,87 @@ against a live daemon.
 Everything registered so far, as an arrayref of
 `{ scope, id, subclass, path }`. Used by the root index and `proxmod-verify`.
 Read-only; nothing else should call it.
+
+### `$api->wrap_method(%args)` / `$api->wrap_sub(%args)`
+
+Wrap a Proxmox seam. `wrap_method` takes a PVE API method by `class` and `name`;
+`wrap_sub` takes a plain named function by `package` and `name`.
+
+```perl
+$api->wrap_method(
+    class   => 'PVE::API2::Qemu',
+    name    => 'create_vm',
+    posture => 'closed',
+    daemons => ['pvedaemon'],
+    before  => sub {
+        my ($args) = @_;             # $args->[0] is the method's $param
+        die "over quota\n" if ...;   # closed: this refuses the create
+    },
+);
+
+$api->wrap_sub(
+    package => 'PVE::AccessControl',
+    name    => 'add_vm_to_pool',
+    posture => 'open',
+    before  => sub { my ($args) = @_; record(@$args) },
+);
+```
+
+| Argument | |
+|---|---|
+| `class` / `package` | where the seam lives |
+| `name` | the method or sub |
+| `posture` | **required** — `closed` or `open`. See below |
+| `before` / `after` | hooks; at least one. `before` gets `($args)`, `after` gets `($args, $ret)`, both arrayrefs |
+| `daemons` | optional; skip this seam unless running in one of these |
+| `id` | optional label for the ledger; defaults to `Class::name` |
+
+Returns the seam id. **Idempotent** — wrapping the same seam twice is a no-op,
+not a second layer that would run every hook twice.
+
+#### `posture` is required, and there is no default
+
+Because the two answers are opposites and neither is safe to guess
+([ADR 0012](adr/0012-wrap-posture-is-explicit.md)):
+
+- **`closed`** — a hook that dies propagates, and the wrapped call never runs.
+  What enforcement needs: a refusal that gets swallowed is not a refusal.
+- **`open`** — a hook that dies is caught, logged, and the original runs anyway.
+  *Our half is optional; theirs is not.* What presentation needs: a missing tab
+  is acceptable, a hypervisor interface that will not render is not.
+
+#### What you get for free
+
+- **The probe.** A seam that is not there is logged **once**, left unwrapped, and
+  recorded with the reason. It does not throw, and it does not stop your other
+  seams installing. A Proxmox upgrade that moves one method costs you that one
+  feature.
+- **`code` and nothing else.** `wrap_method` replaces `$info->{code}` on the live
+  method hashref [PVE-F-054] — the schema, `permissions`, `protected` and the
+  return type stay Proxmox's. That one replacement covers *both* ways PVE reaches
+  a method: `$class->handle($info, …)` and the class method `AUTOLOAD` installs
+  lazily, which closes over the same hashref.
+- **The contract.** Arguments, calling context and return value are passed
+  through untouched.
+
+#### What you do not get
+
+The hooks are yours. proxmod does not decide what a refusal means, what to log
+about it, or whether the thing you are guarding is over its limit — only that
+your hook runs, and what happens if it dies.
+
+### `Proxmod::API::seams()`
+
+Every seam wrapped in this process, as an arrayref of
+`{ id, ext, kind, class, name, posture, wrapped, reason }`.
+
+`wrapped` is `0` for a seam that was probed and not found, **and** for one
+skipped because `daemons` named a different daemon; `reason` tells them apart.
+That distinction matters — "gone" and "not mine" look the same in a count.
+
+`proxmod-verify` reports this. So should anything that tells a user whether a
+number on a screen is being enforced, because a log line from load time is not
+an answer to that question a month later.
 
 ---
 

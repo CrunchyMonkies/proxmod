@@ -24,7 +24,7 @@ use lib '/usr/share/perl5';
 use Proxmod::Patch ();
 use JSON::PP ();
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 my $PREFIX = ($> != 0 && defined $ENV{PROXMOD_TEST_PREFIX})
     ? $ENV{PROXMOD_TEST_PREFIX} : '';

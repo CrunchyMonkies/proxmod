@@ -11,7 +11,7 @@ use ProxmodTest qw(tempdir write_file capture_log is_tainted);
 
 use Proxmod::Registry;
 
-plan tests => 70;
+plan tests => 73;
 
 # Two directories, mirroring the real layout: the package-owned drop-in
 # directory and the administrator's override directory on top of it.
@@ -300,7 +300,35 @@ manifest($pkg, '50-daemons.conf',
     my ($exts, $log) = load_from($pkg, $admin);
     is_deeply([ keys %{ $exts->[0]{backend}{daemons} } ], ['pvedaemon'],
         'an unsupported daemon is dropped from the list');
-    like($log, qr/unknown daemon 'pvestatd'/, 'and reported');
+    like($log, qr/unknown host 'pvestatd'/, 'and reported');
+}
+
+clear();
+
+# The command-line tools are hosts an extension may ask for by name. They are
+# not daemons: proxmod only reaches them through a patch an operator enabled
+# (ADR 0013), and an extension that wants to be there has to say so.
+manifest($pkg, '50-cli.conf',
+    '{"id":"cli","backend":{"module":"A::Cli","daemons":["pvedaemon","qm","pct","pvesh"]}}');
+{
+    my ($exts, $log) = load_from($pkg, $admin);
+    is_deeply([ sort keys %{ $exts->[0]{backend}{daemons} } ],
+        ['pct', 'pvedaemon', 'pvesh', 'qm'], 'a CLI may be named in backend.daemons');
+    unlike($log, qr/unknown host/, 'and none of them is reported as unknown');
+}
+
+clear();
+
+# THE DEFAULT MUST NOT DRIFT. Every extension written before the CLIs were
+# accepted omits this key, and none of them was written with `qm` in mind. An
+# upgrade must not start loading them into a command somebody types — least of
+# all one that then wraps an API method and can refuse it.
+manifest($pkg, '50-default-hosts.conf',
+    '{"id":"defaulted","backend":{"module":"A::Defaulted"}}');
+{
+    my ($exts) = load_from($pkg, $admin);
+    is_deeply([ sort keys %{ $exts->[0]{backend}{daemons} } ], ['pvedaemon', 'pveproxy'],
+        'an absent daemons key still means the two daemons, and no CLI');
 }
 
 # A missing directory is normal, not an error: /etc/proxmod/extensions.d only

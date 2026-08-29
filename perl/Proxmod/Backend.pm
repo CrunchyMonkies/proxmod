@@ -6,7 +6,7 @@ use warnings;
 use Proxmod::Log qw(log_debug log_info log_warn log_error);
 use Proxmod::API;
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 # Loads each extension's Perl module and lets it register its endpoints.
 #
@@ -26,10 +26,13 @@ our $VERSION = '0.2.2';
 #     }
 our $ENTRY_POINT = 'proxmod_register';
 
+# Returns { loaded => \@ids, failed => \@ids }, named in extensions. Ids
+# rather than counts for the reason Frontend::install gives: boot() unions
+# this with the frontend stage's answer, and in pveproxy the two sets overlap.
 sub install {
     my ($daemon, $exts) = @_;
 
-    my ($loaded, $failed) = (0, 0);
+    my (@loaded, @failed);
 
     for my $ext (@{ $exts || [] }) {
         my $id = defined $ext->{id} ? $ext->{id} : '<unnamed>';
@@ -41,7 +44,7 @@ sub install {
         };
 
         if ($ok) {
-            $loaded++;
+            push @loaded, $id;
             next;
         }
 
@@ -49,10 +52,10 @@ sub install {
         $err =~ s/\s+$//;
         $err =~ s/\s*\n\s*/ /g;
         log_error("extension $id: not loaded: $err");
-        $failed++;
+        push @failed, $id;
     }
 
-    return { loaded => $loaded, failed => $failed };
+    return { loaded => \@loaded, failed => \@failed };
 }
 
 sub _install_one {

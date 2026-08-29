@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-08
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the defect analysis cites `~/dev/pmxxpuiov` by file and
 line; the injection mechanism is verified by `[PVE-F-020]`–`[PVE-F-026]` and

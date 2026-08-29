@@ -1,7 +1,7 @@
 # Conventions
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the namespace rules are enforced by
 [`perl/Proxmod/Registry.pm`](../perl/Proxmod/Registry.pm) and
@@ -116,6 +116,12 @@ to escape through it.
 **Probe before you wrap.** `can()` before a glob wrap, `Ext.ClassManager.get()`
 before an ExtJS override. A seam that moved should produce a missing feature and
 a log line, never a stuck interface.
+
+In Perl this is no longer something to remember: `$api->wrap_method` and
+`$api->wrap_sub` do the probe, the log-once rule and the bookkeeping, and refuse
+to install a wrap that has not said what a dying hook should do
+([`perl-api.md`](perl-api.md) §2, [ADR 0012](adr/0012-wrap-posture-is-explicit.md)).
+Hand-rolling one is [REQ-BE-026].
 
 ## 4. JavaScript
 

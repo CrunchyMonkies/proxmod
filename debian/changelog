@@ -1,3 +1,138 @@
+proxmod (0.4.0) unstable; urgency=medium
+
+  proxmod can now run inside qm, pct and pvesh, if an operator asks for it.
+
+  A seam wrap installed in pvedaemon does not apply to a command somebody types.
+  The three CLIs are eight-line stubs that load PVE::CLI::<tool> and dispatch in
+  their own process, to the same PVE::API2 classes the daemons use — so the seam
+  is there and only proxmod is missing. Found on a live host, where an
+  over-quota create was refused through the REST API and succeeded as
+  `qm create`, same node and same second. Recorded as [PVE-F-055].
+
+  Three patch specs in patches/ insert `use Proxmod;` into the three PVE::CLI
+  modules. They ship DISABLED, and a default install patches nothing and behaves
+  exactly as before. Enabling one gives up `dpkg -V` on that file, which is the
+  strongest claim proxmod makes, and puts proxmod in the path of the primary
+  tool for managing guests — so it is the operator's decision and ADR 0013
+  explains what they are taking on. The binaries in /usr/sbin were never
+  candidates: reaching them would have meant adding /usr/sbin and /usr/bin to
+  the patch allowlist, which is a far worse trade than the patch. PERL5OPT was
+  not a candidate either — taint mode ignores it, and pct is -T while qm and
+  pvesh are not, so it would have enforced on VMs and silently not on
+  containers.
+
+  Proxmod::Registry gains a notion of a known CLI, kept separate from a known
+  daemon because the difference is consulted at three sites and each needs it. A
+  CLI has a real terminal, so its output stays there; it renders no pages, so
+  the frontend stage is skipped; it is transient, so nothing durable is recorded
+  from it. An extension has to name a CLI in backend.daemons to be loaded into
+  one, and the default when that key is absent stays daemons-only — an extension
+  written before this existed must not start running inside `qm` on upgrade.
+
+  Proxmod::API::scope_available lets an extension probe a scope instead of
+  finding out by dying. qm and pct do not load PVE::API2::Cluster, and because
+  an extension registers its routes and installs its seam wraps in one call, a
+  mount that died there would take the wraps with it — which are the whole
+  reason for being in a CLI. pvesh does build the full tree, so it can now see
+  proxmod's own endpoints, which it never could before.
+
+  Also fixes the syslog switch introduced in 0.3.1, which was set before proxmod
+  knew what it was running inside. It is now set for a detaching daemon and
+  nothing else, so `perl -MProxmod -e1` and a patched `qm` both keep the
+  terminal they were run from.
+
+ -- Matthew Mckenzie <matthew.m.mckenzie@gmail.com>  Sat, 29 Aug 2026 10:00:00 +0000
+
+proxmod (0.3.1) unstable; urgency=medium
+
+  Everything logged after boot went to /dev/null.
+
+  Proxmod::Log wrote to stderr on the stated grounds that "systemd wires both
+  daemons' output to the journal, so STDERR *is* the log". That is true only
+  during the INIT phase. PVE::Daemon reopens STDOUT on /dev/null and then STDERR
+  onto STDOUT once the daemon detaches (Daemon.pm:313-337), so both are
+  /dev/null for the master and every worker it forks — confirmed on a live host,
+  where /proc/<pid>/fd/2 for a pvedaemon worker points at /dev/null.
+
+  So registration lines appeared and nothing else ever did. The failure is
+  invisible in exactly the places you would look for it: a test harness
+  localises $FH and sees the output, proxmodctl and proxmod-verify have a real
+  stderr and see it too, and proxmod-verify's own journal grep only ever checks
+  for boot lines. It cost proxmod-pool-quota every refusal log line in
+  production — the wrap fired, the caller got a 403 naming the limit, and
+  `journalctl -u pvedaemon` said nothing at all.
+
+  Inside a daemon the line now goes to syslog, which PVE has already opened with
+  the right tag and facility (Daemon.pm:244 calls initlog), and which lands in
+  the same journal an administrator was already reading. Proxmod::Boot sets the
+  switch; proxmodctl and proxmod-verify do not, so they keep the terminal they
+  were run from. The message is passed as an argument to a '%s' format and never
+  as the format itself, because these lines carry text an operator typed.
+
+  t/00-compile.t pins all of it, including that a stderr nobody is reading stays
+  empty.
+
+ -- Matthew Mckenzie <matthew.m.mckenzie@gmail.com>  Sat, 29 Aug 2026 00:00:00 +0000
+
+proxmod (0.3.0) unstable; urgency=medium
+
+  Wrapping a Proxmox seam is now something proxmod does, not something every
+  extension re-derives.
+
+  conventions.md has always said "probe before you wrap; a seam that moved
+  should produce a missing feature and a log line, never a stuck interface".
+  That was prose with no code behind it. The only implementation was
+  Frontend::_wrap — private, specific to two seams of PVE::Service::pveproxy,
+  and fail-open — so the first backend extension to enforce anything wrote the
+  whole thing again: the probe, the eval, the log-once rule, idempotency, and a
+  ledger to report what was live. The next one would have written a third.
+
+  Proxmod::API gains wrap_method and wrap_sub. wrap_method replaces
+  $info->{code} on the live method hashref and nothing else, which covers both
+  ways PVE reaches a method — handle($info, ...) and the class method AUTOLOAD
+  installs lazily, closing over the same hashref [PVE-F-054], newly harvested.
+  wrap_sub does the same for a plain named function. A seam that is not found is
+  logged once, left unwrapped, and recorded with the reason; it does not throw
+  and does not stop the other seams installing.
+
+  posture is a required argument with no default, taking closed or open. This is
+  ADR 0006's argument about permissions applied to a second silent default: a
+  hook that dies either refuses the wrapped call or is swallowed, those are
+  opposites, and guessing wrong is invisible in one direction and takes out the
+  web interface in the other. proxmod has two consumers and they split one
+  apiece, so there is no majority to default to. ADR 0012 records it.
+
+  Proxmod::Frontend now uses the shared facility instead of its own copy. Its
+  two seams appear in Proxmod::API::seams() and therefore in proxmod-verify for
+  the first time — previously a moved get_index was one log line at boot and
+  nothing afterwards, which is no use to an administrator asking six months
+  later. t/06-frontend.t passes unchanged, which is the evidence the refactor
+  moved no behaviour.
+
+  proxmod-verify reports which seams are wrapped and which are not, beside the
+  route replay it already does.
+
+  Separately, the booted line's extensions= figure counted stages, not
+  extensions. An extension declaring both a frontend and a backend half is one
+  extension and pveproxy runs both halves, so boot() summed two stage results as
+  if they were disjoint sets and reported it twice — which proxmod-verify then
+  rendered to an administrator as "2 extension(s) loaded". Frontend::install and
+  Backend::install now return the ids they loaded and failed rather than counts,
+  and boot() unions them, so each applicable extension is counted exactly once:
+  in extensions= only if every stage it was applicable to succeeded, otherwise
+  in failed=. The two now partition the applicable set. An extension whose
+  backend registered but whose frontend was dropped counts once, as failed,
+  because the question behind failed= is whether anything needs looking at. The
+  line's shape is untouched, so proxmod-verify's parser and daemons started by
+  an older proxmod are unaffected. specifications.md gains REQ-FW-018b, whose
+  absence is why the test suite asserted the wrong number as correct.
+
+  Note for upgrades: registry= folds proxmod's own version into the fingerprint,
+  so each node reports drift against the others until every one of them is on
+  0.3.0. That is expected, and it clears as the rollout completes.
+
+ -- Matthew Mckenzie <matthew.m.mckenzie@gmail.com>  Fri, 28 Aug 2026 00:00:00 +0000
+
 proxmod (0.2.2) unstable; urgency=medium
 
   * proxmodctl list printed nothing. The reader expected `id = value` and the

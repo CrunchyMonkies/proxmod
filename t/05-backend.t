@@ -96,8 +96,8 @@ subtest 'nothing to install is not a failure' => sub {
 
     for my $exts (undef, []) {
         my ($result) = capture_log(sub { Proxmod::Backend::install('pvedaemon', $exts) });
-        is($result->{loaded}, 0, 'nothing loaded');
-        is($result->{failed}, 0, 'nothing failed');
+        is_deeply($result->{loaded}, [], 'nothing loaded');
+        is_deeply($result->{failed}, [], 'nothing failed');
     }
 };
 
@@ -111,8 +111,8 @@ subtest 'a well-formed extension registers its endpoints' => sub {
         Proxmod::Backend::install('pvedaemon', [ext(id => 'good', backend => { module => $mod })]);
     });
 
-    is($result->{loaded}, 1, 'counted as loaded');
-    is($result->{failed}, 0, 'nothing failed');
+    is_deeply($result->{loaded}, ['good'], 'counted as loaded, by name');
+    is_deeply($result->{failed}, [], 'nothing failed');
     like($log, qr{\Qgood: T::Good registered\E}, 'the journal records the registration');
 
     my ($class) = PVE::API2->find_handler('GET', '/nodes/n1/proxmod/good', {});
@@ -144,8 +144,8 @@ subtest 'a module that dies at require costs only itself' => sub {
         ]);
     });
 
-    is($result->{loaded}, 1, 'the working extension loaded');
-    is($result->{failed}, 1, 'the broken one is counted as failed');
+    is_deeply($result->{loaded}, ['fine'], 'the working extension loaded');
+    is_deeply($result->{failed}, ['boom'], 'the broken one is counted as failed');
     like($log, qr{extension boom: not loaded}, 'the journal names the extension that failed');
     like($log, qr{deliberate compile-time failure}, '...and says what went wrong');
     unlike($log, qr{extension fine: not loaded}, '...and does not blame the other one');
@@ -183,7 +183,7 @@ subtest 'a module without the entry point is a failure, not a crash' => sub {
         Proxmod::Backend::install('pvedaemon', [ext(id => 'noentry', backend => { module => $mod })]);
     });
 
-    is($result->{failed}, 1, 'counted as failed');
+    is_deeply($result->{failed}, ['noentry'], 'counted as failed');
     like($log, qr{\QT::NoEntry does not define proxmod_register\E},
         'the journal says exactly what is missing');
     like($log, qr{extension noentry}, '...and which extension to fix');
@@ -214,8 +214,8 @@ PM
         ]);
     });
 
-    is($result->{loaded}, 1, 'only the healthy one is counted as loaded');
-    is($result->{failed}, 1, 'the half-registered one is counted as failed');
+    is_deeply($result->{loaded}, ['after'], 'only the healthy one is counted as loaded');
+    is_deeply($result->{failed}, ['half'], 'the half-registered one is counted as failed');
     like($log, qr{changed my mind}, 'the journal carries the reason');
 
     my ($class) = PVE::API2->find_handler('GET', '/nodes/n1/proxmod/after', {});
@@ -291,7 +291,7 @@ subtest 'the shipped example loads end to end' => sub {
         }]);
     });
 
-    is($result->{loaded}, 1, 'it loads');
+    is_deeply($result->{loaded}, ['example-hello'], 'it loads');
     unlike($log, qr{\b(?:warn|error)\b}, 'with nothing to complain about');
 
     for my $path (qw(/nodes/n1/proxmod/example-hello

@@ -1,7 +1,7 @@
 # Writing a backend extension
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** the worked example in this document is
 [`examples/proxmod-example-hello/`](../examples/proxmod-example-hello/), which is
@@ -206,6 +206,42 @@ in `pvedaemon` only).
 Narrow `daemons` only when you have a specific reason — for instance, a module
 whose `use` line pulls in something that must not be loaded into the
 unprivileged daemon.
+
+### The command-line tools
+
+`qm`, `pct` and `pvesh` may also be named here, and they are **not** in the
+default. An extension that omits `daemons` gets the two daemons and no CLI.
+
+```jsonc
+"daemons": ["pvedaemon", "pveproxy", "qm", "pct", "pvesh"]
+```
+
+They are worth naming for exactly one reason: a **seam wrap**. A CLI dispatches
+to the same `PVE::API2` classes the daemons do, in its own process, so a wrap
+installed there applies to `qm create` — which nothing installed in `pvedaemon`
+ever will, because a command somebody types is not a client of the daemon
+`[PVE-F-055]`. If your extension only registers endpoints, naming a CLI buys you
+nothing and costs a module load on every invocation.
+
+Two things to know before you do.
+
+**It does not work until an operator enables a patch.** proxmod reaches the
+daemons through a systemd `ExecStart` drop-in, and there is no equivalent for a
+CLI — the only way in is a `use Proxmod;` in the module the CLI loads, which
+means editing a Proxmox file. `patches/6*-cli-*.conf` do that and **ship
+disabled**. Naming a CLI in your manifest is you saying *"put me there if it is
+ever switched on"*, not a request to switch it on. See
+[ADR 0013](adr/0013-cli-enforcement-is-opt-in.md).
+
+**A cluster-scoped mount will fail there.** `qm` and `pct` load the API2 classes
+they need and no more, so `PVE::API2::Cluster` is absent. Since `mount` and your
+wraps happen in the same `proxmod_register`, a mount that dies takes the wraps
+with it. Probe first:
+
+```perl
+$api->mount(scope => 'cluster', subclass => __PACKAGE__)
+    if $api->scope_available('cluster');
+```
 
 ---
 
@@ -450,6 +486,67 @@ harmless, but the underlying rule is still there for anything you register by
 hand. Do not call `PVE::RESTHandler->register_method` directly.
 
 ---
+
+## 9a. Wrapping a Proxmox seam
+
+Registering an endpoint *adds* to Proxmox. Sometimes you need to change what
+Proxmox already does — refuse a create that would breach a limit, notice
+something happening on a path you do not own. That is a **seam**, and proxmod
+gives you one way to take it.
+
+```perl
+sub proxmod_register {
+    my ($api) = @_;
+
+    $api->wrap_method(
+        class   => 'PVE::API2::Qemu',
+        name    => 'create_vm',
+        posture => 'closed',
+        daemons => ['pvedaemon'],
+        before  => sub {
+            my ($args) = @_;
+            my $param = $args->[0];
+            die "pool '$param->{pool}' is full\n" if over_quota($param);
+        },
+    );
+}
+```
+
+`before` runs ahead of Proxmox's own code, so a `die` there refuses the call
+before anything is written or allocated. `after` runs behind it and gets the
+return value to inspect or adjust.
+
+**Say which posture you want; there is no default.** `closed` means a hook that
+dies refuses the wrapped call. `open` means it is logged and Proxmox's own
+behaviour continues regardless. Pick the one that is true for what you are doing
+— and if the answer is "I have not thought about it", that is exactly the
+situation [ADR 0012](adr/0012-wrap-posture-is-explicit.md) exists to interrupt.
+
+**Do not hand-roll this** ([REQ-BE-026]). It looks like four lines of glob
+assignment and it is not: `map_method_by_name` returns the live method hashref
+and `AUTOLOAD` closes over the same one [PVE-F-054], so a wrap has to land in a
+place that covers both ways PVE calls a method, replace `code` without disturbing
+the schema or the `permissions` block, survive a Proxmox upgrade that moved the
+seam, and not double itself if your module gets loaded twice.
+
+### Three things to know before you use it
+
+**A missing seam is not an error.** If Proxmox moved or renamed the method,
+proxmod logs it once, leaves it unwrapped, and carries on installing your other
+seams. Your extension keeps working with that one capability missing — which is
+the design, and why you should check `Proxmod::API::seams()` rather than assume.
+
+**Enforce at the API entry point, not deep in the call.** The tempting seam is
+usually the one chokepoint everything passes through, and it is usually too late:
+by the time it runs, the guest may already be written to disk with volumes
+allocated, and dying there leaves a mess worse than not enforcing. Wrap the
+method the request arrives at.
+
+**A wrap cannot see inside a forked worker's lifetime.** Anything long-running in
+PVE returns a UPID and does the work in a child process [REQ-BE-018], so your
+`after` hook runs when the fork happens, not when the work finishes. A wrap is
+the right place to *refuse* something and the wrong place to hold a lock across
+it.
 
 ## 10. Talking to the system safely
 

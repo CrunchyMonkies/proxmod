@@ -161,6 +161,19 @@ find_in() {
     find_in "$TP/pve-common/src/PVE/RESTHandler.pm" "the registration guards" \
         "duplicate path|path match error|duplicate method definition|method name already defined|fragmentDelimiter"
     echo
+
+    echo "=== [PVE-F-055] the CLI stubs dispatch in their own process ==="
+    for cli in "qemu-server/src/bin/qm" "pve-container/src/pct" "pve-manager/bin/pvesh"; do
+        find_in "$TP/$cli" "the stub and its shebang" \
+            '^#!|use PVE::CLI::|run_cli_handler'
+    done
+    echo
+
+    echo "=== [PVE-F-054] map_method_by_name returns the live hashref; AUTOLOAD closes over it ==="
+    # shellcheck disable=SC2016 # the $ are Perl sigils we are grepping for
+    find_in "$TP/pve-common/src/PVE/RESTHandler.pm" "the method registry and the lazy class method" \
+        'sub map_method_by_name|method_by_name->\{|sub AUTOLOAD|->handle\(\$info|= \$info->\{code\}|actual API code execution'
+    echo
 } > "$out"
 
 echo "wrote $out"

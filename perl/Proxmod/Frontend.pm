@@ -3,11 +3,12 @@ package Proxmod::Frontend;
 use strict;
 use warnings;
 
+use Proxmod::API ();
 use Proxmod::Log qw(log_debug log_info log_warn log_error);
 
 use JSON::PP ();
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 # Getting extension JavaScript into the Proxmox VE web interface without
 # modifying a single file that Proxmox owns.
@@ -62,7 +63,7 @@ my $RE_VERSION = qr/\A([A-Za-z0-9][A-Za-z0-9._+~-]{0,31})\z/;
 my $ASSETS = [];
 
 # Only for the tests.
-sub _reset { $ASSETS = []; return }
+sub _reset { $ASSETS = []; Proxmod::API::_forget_seams('proxmod'); return }
 
 sub assets { return $ASSETS }
 
@@ -70,10 +71,15 @@ sub assets { return $ASSETS }
 # Install
 # ---------------------------------------------------------------------------
 
-# Returns { loaded => n, failed => n }, counted in extensions: an extension
-# whose assets are queued is loaded, one we had to drop is failed. If the seam
-# itself is gone, every frontend extension has failed, which is exactly what an
-# administrator needs told.
+# Returns { loaded => \@ids, failed => \@ids }, named in extensions: an
+# extension whose assets are queued is loaded, one we had to drop is failed. If
+# the seam itself is gone, every frontend extension has failed, which is exactly
+# what an administrator needs told.
+#
+# Ids rather than counts because boot() has to union this with the backend
+# stage's answer, and the two sets overlap: an extension declaring both halves
+# appears in both. Counts cannot be unioned, which is how extensions= came to
+# report one extension twice.
 sub install {
     my ($exts) = @_;
 
@@ -83,13 +89,11 @@ sub install {
         # Nothing to serve, so nothing is wrapped and the index is not touched.
         # proxmod's footprint on a host with no frontend extension is zero.
         log_debug('no extension declares a frontend asset, leaving the index alone');
-        return { loaded => 0, failed => 0 };
+        return { loaded => [], failed => [] };
     }
 
-    my ($assets, $failed) = _collect(\@wanted);
+    my ($assets, $loaded, $failed) = _collect(\@wanted);
     $ASSETS = $assets;
-
-    my $loaded = scalar(@wanted) - $failed;
 
     for my $stage (['static routes', \&_wrap_init], ['index injection', \&_wrap_get_index]) {
         my ($name, $code) = @$stage;
@@ -111,12 +115,21 @@ sub install {
         # are live but unreferenced, which costs nothing. Emptying the asset
         # list makes the second case inert as well.
         $ASSETS = [];
-        return { loaded => 0, failed => scalar(@wanted) };
+        return { loaded => [], failed => [ map { _id_of($_) } @wanted ] };
     }
 
     log_info('frontend ready: ' . scalar(@$assets) . ' asset(s) below /proxmod/');
 
     return { loaded => $loaded, failed => $failed };
+}
+
+# The name an extension is counted under. Proxmod::Registry validates every id
+# against the same expression before an extension reaches here, so the fallback
+# is for a caller that did not come through the registry — the tests, and
+# proxmod-verify replaying one entry at a time.
+sub _id_of {
+    my ($ext) = @_;
+    return defined $ext->{id} ? $ext->{id} : '<unnamed>';
 }
 
 # Build the ordered asset list. proxmod's own runtime first, then each
@@ -130,13 +143,13 @@ sub _collect {
         url => "$URL_PREFIX$UI_ASSET?v=$VERSION",
     });
 
-    my $failed = 0;
+    my (@loaded, @failed);
 
     for my $ext (@$exts) {
         my ($id) = (($ext->{id} // '') =~ $RE_ID);
         if (!defined $id) {
             log_warn('frontend: ignoring an extension with an unusable id');
-            $failed++;
+            push @failed, _id_of($ext);
             next;
         }
 
@@ -172,15 +185,16 @@ sub _collect {
 
         if (!@ok) {
             log_warn("$id: declared a frontend but none of its assets are usable");
-            $failed++;
+            push @failed, $id;
             next;
         }
 
         push @assets, @ok;
+        push @loaded, $id;
         log_debug("$id: " . scalar(@ok) . ' frontend asset(s) queued');
     }
 
-    return (\@assets, $failed);
+    return (\@assets, \@loaded, \@failed);
 }
 
 # ---------------------------------------------------------------------------
@@ -188,40 +202,38 @@ sub _collect {
 # ---------------------------------------------------------------------------
 
 # Replace $TARGET::$name with a sub that calls the original and then does our
-# work. Dies if the seam is not there, which the caller turns into one log line
-# and no injection.
+# work.
+#
+# The mechanics live in Proxmod::API::wrap_sub, which is the same facility a
+# backend extension uses — the probe, the log-once-and-leave-unwrapped rule and
+# the ledger are not worth two implementations in one codebase. proxmod wraps
+# these under its own name rather than an extension's, so the frontend's seams
+# show up in `Proxmod::API::seams()` and therefore in proxmod-verify alongside
+# everybody else's. Before that they were one log line at boot and nothing
+# afterwards, which is no use to an administrator asking six months later
+# whether a pve-manager upgrade moved get_index.
+#
+# posture => 'open' is the rule this file has always followed, now stated rather
+# than implied: OUR HALF IS OPTIONAL; THEIRS IS NOT. A hook that dies is logged
+# and the original's return value is what the caller gets. A missing tab is
+# acceptable; an index page that fails to render is not.
 sub _wrap {
     my ($name, $after) = @_;
 
-    my $orig = $TARGET->can($name)
-        or die "$TARGET has no $name() to wrap; this is not a Proxmox VE we know\n";
+    my $id = Proxmod::API::_wrap(
+        'proxmod', 'pveproxy', 'sub',
+        package => $TARGET,
+        name => $name,
+        posture => 'open',
+        after => $after,
+    );
 
-    {
-        no strict 'refs'; ## no critic (ProhibitNoStrict)
-        no warnings 'redefine'; ## no critic (ProhibitNoWarnings)
-        *{"${TARGET}::${name}"} = sub {
-            my @args = @_;
-            my @ret = $orig->(@args);
+    my ($seam) = grep { $_->{id} eq $id } @{ Proxmod::API::seams() };
 
-            # Our half is optional; theirs is not. Whatever happens below, the
-            # original's return value is what the caller gets.
-            my $ok = eval {
-                local $SIG{__DIE__} = 'DEFAULT';
-                $after->(\@args, \@ret);
-                1;
-            };
-            if (!$ok) {
-                my $err = $@ || 'unknown error';
-                $err =~ s/\s+$//;
-                $err =~ s/\s*\n\s*/ /g;
-                log_error("$name wrapper failed, serving Proxmox's own output: $err");
-            }
-
-            return wantarray ? @ret : $ret[0];
-        };
-    }
-
-    log_debug("wrapped ${TARGET}::${name}");
+    # install() turns this into one log line and no injection. The stage order
+    # there is what keeps a partial install safe, so a seam that is not there
+    # still has to be an exception here and not a quiet zero.
+    die "$seam->{reason}\n" if $seam && !$seam->{wrapped};
 
     return;
 }

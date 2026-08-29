@@ -1,7 +1,7 @@
 # Testing
 
 **Status:** Stable
-**Applies to:** proxmod 0.2.x
+**Applies to:** proxmod 0.4.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** `prove -r t/` on this host; the QEMU suite run against a PVE 9.1 VM built from `proxmox-ve_9.1-1.iso`
 

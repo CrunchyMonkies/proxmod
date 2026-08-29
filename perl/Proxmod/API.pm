@@ -5,7 +5,7 @@ use warnings;
 
 use Proxmod::Log qw(log_debug log_info log_warn log_error);
 
-our $VERSION = '0.2.2';
+our $VERSION = '0.4.0';
 
 # The surface a backend extension codes against.
 #
@@ -99,11 +99,47 @@ my @routes;
 
 sub routes { return [ @routes ] }
 
+# Every seam wrapped in this process, in the order it was asked for, as
+# { id, ext, kind, class, name, posture, wrapped, reason }. `wrapped` is 0 for a
+# seam that was probed and not found, or skipped because this is the wrong
+# daemon; `reason` says which.
+#
+# The ledger exists because "is this seam live right now" is a question with no
+# other answer. A wrap that failed logs one line at load time, and by the time
+# an administrator wonders whether a pve-manager upgrade moved a method, that
+# line has scrolled out of the journal. proxmod-verify replays this the same way
+# it replays @routes.
+my @seams;
+
+# "kind class name" => the record above, for idempotent re-wrapping.
+my %seam_seen;
+
+sub seams { return [ @seams ] }
+
 sub _reset {
     %root_ready = ();
     %mounts = ();
     %methods = ();
     @routes = ();
+    @seams = ();
+    %seam_seen = ();
+    return;
+}
+
+# Test-only. Forget the seams one owner installed, so a suite that restored the
+# original subs by hand can install them again — without that, the idempotency
+# above correctly refuses to re-wrap something it believes is already wrapped.
+# Production never calls this: wraps go in once per daemon start and die with
+# the process.
+sub _forget_seams {
+    my ($ext) = @_;
+
+    @seams = grep { $_->{ext} ne $ext } @seams;
+
+    for my $key (keys %seam_seen) {
+        delete $seam_seen{$key} if $seam_seen{$key}->{ext} eq $ext;
+    }
+
     return;
 }
 
@@ -252,6 +288,35 @@ sub new {
 
 sub id { return $_[0]->{id} }
 sub daemon { return $_[0]->{daemon} }
+
+# Can this scope be mounted in this process at all?
+#
+# mount() dies when the scope's parent class is not loaded, which is right for a
+# daemon — there, a missing PVE::API2::Cluster means something is badly wrong and
+# the extension should fail loudly. It is not right in a command-line tool: `qm`
+# and `pct` load the classes they need and no more, so PVE::API2::Cluster simply
+# is not there, and an extension that mounts a cluster-scoped route would fail to
+# register at all.
+#
+# That matters more than a missing route. An extension registers its endpoints
+# and installs its seam wraps in the same proxmod_register call, so a mount that
+# dies takes the wraps with it — and in a CLI the wraps are the entire reason for
+# being there. Probing lets an extension put its routes where they mean something
+# and its wraps everywhere.
+#
+# `pvesh` is the interesting case: it builds the full API tree, so the mount
+# succeeds and proxmod's own endpoints become visible to it — which they have
+# never been before.
+sub scope_available {
+    my ($self, $scope) = @_;
+
+    my $spec = $SCOPES{$scope};
+
+    return 0 if !$spec;
+    return 0 if !PVE::RESTHandler->can('register_method');
+
+    return $spec->{parent}->can('register_method') ? 1 : 0;
+}
 
 # Give this extension its own subtree of the API. Returns the path it was given.
 # Idempotent: mounting the same class in the same scope twice is a no-op, and
@@ -416,6 +481,275 @@ sub _check_permissions {
     }
 
     return;
+}
+
+# ---------------------------------------------------------------------------
+# Wrapping a Proxmox seam
+# ---------------------------------------------------------------------------
+#
+# ADR 0001 chose runtime injection over patching Proxmox's files, and
+# conventions.md §3 states the rule that follows from it — "probe before you
+# wrap; a seam that moved should produce a missing feature and a log line, never
+# a stuck interface". Until now that was prose, and every extension implemented
+# it by hand, differently.
+#
+# Two kinds of seam, because Proxmox offers two:
+#
+#   method  a PVE API method, reached through its live $info hashref.
+#           map_method_by_name returns the SAME hashref register_method was
+#           given, handle() reads $info->{code} on every call, and AUTOLOAD
+#           closes over that hashref when it lazily installs the class method
+#           [PVE-F-054] — so replacing that one field covers
+#           $class->handle($info, ...) and $class->method_name(...) at once.
+#           Only `code` is touched: the schema, permissions, protected flag and
+#           return type are Proxmox's, and a wrap that changed them would be a
+#           compatibility break dressed up as a policy.
+#
+#   sub     a plain named function, replaced in the symbol table. This is what
+#           the frontend injection uses, and what an extension reaches for when
+#           the seam is not an API method at all.
+#
+# POSTURE IS MANDATORY AND HAS NO DEFAULT, for the same reason `permissions` is
+# (ADR 0006, ADR 0012): a hook that dies either refuses the wrapped call or is
+# swallowed, those are opposites, and neither is safe to assume on the author's
+# behalf.
+#
+#   closed  a hook that dies propagates, and the wrapped call never runs.
+#           What enforcement needs.
+#   open    a hook that dies is caught and logged, and the original runs
+#           regardless — "our half is optional; theirs is not".
+
+my $RE_NAME = qr/\A([A-Za-z_][A-Za-z0-9_]*)\z/;
+
+our %POSTURES = (closed => 1, open => 1);
+
+# Wrap a PVE API method by replacing the `code` ref on its live $info hashref.
+#
+#     $api->wrap_method(
+#         class   => 'PVE::API2::Qemu',
+#         name    => 'create_vm',
+#         posture => 'closed',
+#         daemons => ['pvedaemon'],
+#         before  => sub { my ($args) = @_; ... },   # $args->[0] is $param
+#     );
+#
+# Returns the seam id. Idempotent: wrapping the same seam twice is a no-op, not
+# a second layer that would run every hook twice.
+sub wrap_method {
+    my ($self, %args) = @_;
+
+    return _wrap($self->{id}, $self->{daemon}, 'method', %args);
+}
+
+# Wrap a plain named sub in the symbol table. Takes `package` where wrap_method
+# takes `class`; otherwise identical.
+sub wrap_sub {
+    my ($self, %args) = @_;
+
+    return _wrap($self->{id}, $self->{daemon}, 'sub', %args);
+}
+
+# The shared implementation, taking an extension id rather than an object, so
+# that proxmod itself — Proxmod::Frontend — can use it for its own seams without
+# inventing an API object it has no other use for.
+sub _wrap {
+    my ($ext, $daemon, $kind, %args) = @_;
+
+    # wrap_sub spells it `package`, because a plain sub does not live in a
+    # class. Normalised here rather than in the caller so that both public
+    # entry points and proxmod's own internal use agree.
+    $args{class} = delete $args{package} if exists $args{package};
+
+    my $class = $args{class};
+    die "$kind wrap: a class is required\n" if !defined $class || $class eq '';
+
+    my ($clean_class) = ($class =~ $RE_PACKAGE);
+    die "$kind wrap: '$class' is not a valid package name\n" if !defined $clean_class;
+    $class = $clean_class;    # untainted [PVE-F-042]
+
+    my $name = $args{name};
+    die "$kind wrap: a name is required\n" if !defined $name || $name eq '';
+
+    my ($clean_name) = ($name =~ $RE_NAME);
+    die "$kind wrap: '$name' is not a valid sub name\n" if !defined $clean_name;
+    $name = $clean_name;
+
+    my $posture = $args{posture};
+    die "$kind wrap: every wrap must carry a 'posture'. Pass 'closed' for a hook"
+        . " whose death refuses the wrapped call, or 'open' for one whose death is"
+        . " logged and ignored. There is no default because the two are opposites.\n"
+        if !defined $posture || !$POSTURES{$posture};
+
+    my $before = $args{before};
+    my $after = $args{after};
+
+    die "$kind wrap: 'before' must be a CODE reference\n"
+        if defined $before && ref($before) ne 'CODE';
+    die "$kind wrap: 'after' must be a CODE reference\n"
+        if defined $after && ref($after) ne 'CODE';
+    die "$kind wrap: give a 'before' or an 'after'; a wrap that does neither is"
+        . " a slower call to the same function\n"
+        if !defined $before && !defined $after;
+
+    my $id = defined $args{id} && $args{id} ne '' ? $args{id} : "${class}::${name}";
+
+    # Idempotent, the same way mount and add_method are. An extension listed
+    # twice, or a module loaded under two names, must not end up with two layers
+    # of wrap charging every hook twice.
+    my $key = join(' ', $kind, $class, $name);
+    if (my $prev = $seam_seen{$key}) {
+        log_debug("$ext: $class\::$name is already wrapped");
+        return $prev->{id};
+    }
+
+    my $record = {
+        id => $id,
+        ext => $ext,
+        kind => $kind,
+        class => $class,
+        name => $name,
+        posture => $posture,
+        wrapped => 0,
+        reason => undef,
+    };
+
+    push @seams, $record;
+    $seam_seen{$key} = $record;
+
+    # A seam that belongs in one daemon and not another. proxmod knows which
+    # daemon it is, so every consumer would otherwise branch on $api->daemon by
+    # hand — and a seam skipped for this reason is not a seam that is missing,
+    # which is why the ledger records the difference rather than one `wrapped: 0`
+    # for both.
+    if (my $daemons = $args{daemons}) {
+        my $here = defined $daemon ? $daemon : 'unknown';
+
+        if (!grep { $_ eq $here } @$daemons) {
+            $record->{reason} = "not installed in $here; this seam is for "
+                . join(', ', @$daemons);
+            log_debug("$ext: $id not wrapped here ($record->{reason})");
+            return $id;
+        }
+    }
+
+    # Its own probe and its own eval. A seam that is not found is logged ONCE
+    # and left unwrapped — never guessed at, never approximated by wrapping a
+    # nearby method, and never a reason to refuse installing the others. A PVE
+    # upgrade that moves one method costs that one feature.
+    my $ok = eval {
+        local $SIG{__DIE__} = 'DEFAULT';
+        _install($record, $before, $after);
+        1;
+    };
+
+    if (!$ok) {
+        my $err = $@ || 'unknown error';
+        $err =~ s/\s+$//;
+        $err =~ s/\s*\n\s*/ /g;
+
+        $record->{reason} = $err;
+
+        log_warn("$ext: seam $id was not wrapped: $err."
+            . ' Whatever depended on it is not happening; the other seams are'
+            . ' unaffected');
+
+        return $id;
+    }
+
+    $record->{wrapped} = 1;
+    log_debug("$ext: wrapped $kind $class\::$name ($posture)");
+
+    return $id;
+}
+
+sub _install {
+    my ($record, $before, $after) = @_;
+
+    my ($class, $name) = ($record->{class}, $record->{name});
+
+    if ($record->{kind} eq 'method') {
+        die "$class is not loaded, or is not a PVE::RESTHandler subclass\n"
+            if !$class->can('map_method_by_name');
+
+        # Dies "no such method" if the seam moved, which is the clean refusal we
+        # want rather than a guess at a nearby name.
+        my $info = $class->map_method_by_name($name);
+
+        die "the method has no code reference\n" if ref($info->{code}) ne 'CODE';
+
+        # The ONE field touched [PVE-F-054].
+        $info->{code} = _wrapper($record, $info->{code}, $before, $after);
+
+        return;
+    }
+
+    my $orig = $class->can($name);
+
+    die "$class has no $name() to wrap; this is not a Proxmox VE we know\n"
+        if ref($orig) ne 'CODE';
+
+    {
+        no strict 'refs';    ## no critic (ProhibitNoStrict)
+        no warnings qw(redefine once);    ## no critic (ProhibitNoWarnings)
+        *{"${class}::${name}"} = _wrapper($record, $orig, $before, $after);
+    }
+
+    return;
+}
+
+sub _wrapper {
+    my ($record, $orig, $before, $after) = @_;
+
+    my $closed = $record->{posture} eq 'closed';
+
+    return sub {
+        my @args = @_;
+
+        _hook($record, 'before', $closed, sub { $before->(\@args) }) if $before;
+
+        # Context is propagated rather than forced. Calling the original in list
+        # context and handing back $ret[0] would quietly change what a method
+        # returning a list means in scalar context, and this facility is pointed
+        # at code nobody here wrote.
+        if (wantarray) {
+            my @ret = $orig->(@args);
+            _hook($record, 'after', $closed, sub { $after->(\@args, \@ret) }) if $after;
+            return @ret;
+        }
+
+        my $ret = $orig->(@args);
+        _hook($record, 'after', $closed, sub { $after->(\@args, [$ret]) }) if $after;
+        return $ret;
+    };
+}
+
+sub _hook {
+    my ($record, $which, $closed, $code) = @_;
+
+    # closed: a hook that dies refuses the wrapped call, and the caller sees
+    # why. That is the whole point of the posture and it must not be softened.
+    return $code->() if $closed;
+
+    my $ok = eval {
+        local $SIG{__DIE__} = 'DEFAULT';
+        $code->();
+        1;
+    };
+
+    return 1 if $ok;
+
+    my $err = $@ || 'unknown error';
+    $err =~ s/\s+$//;
+    $err =~ s/\s*\n\s*/ /g;
+
+    # proxmod's own seams need no owner prefix: Proxmod::Log already stamps
+    # every line with "proxmod:", and doubling it reads like a bug.
+    my $who = $record->{ext} eq $SEGMENT ? '' : "$record->{ext}: ";
+
+    log_error("$who$record->{id} wrapper failed ($which hook), serving Proxmox's"
+        . " own answer: $err");
+
+    return 0;
 }
 
 # Would a request to this path reach this class? Exposed because an extension

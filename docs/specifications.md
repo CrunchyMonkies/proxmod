@@ -1,7 +1,7 @@
 # proxmod — specification
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every Proxmox-internals claim is cited as `[PVE-F-nnn]`
 into [`pve-facts.md`](pve-facts.md), whose evidence is re-derivable offline from
@@ -372,6 +372,18 @@ registry and cannot be compared with anything. Both daemons MUST report the same
 fingerprint for the same registry. Computing it MUST NOT be able to stop the
 daemon booting; if it dies, the field is omitted. See ADR 0011.
 
+**[REQ-FW-018b]** `extensions=<n>` and `failed=<n>` MUST count distinct
+extensions, never stages. An extension is *applicable* to a daemon if it
+declares frontend assets and the daemon is `pveproxy`, or declares a backend
+module naming this daemon. Each applicable extension MUST be counted exactly
+once: in `extensions=` only if every stage it was applicable to succeeded,
+otherwise in `failed=`. The two therefore sum to the number of applicable
+extensions — half an extension is not a working extension, and the
+administrator reading `failed=` is asking whether anything needs looking at.
+As ADR 0011 records, that total legitimately differs between `pveproxy` and
+`pvedaemon` for one registry, which is why it MUST NOT be compared against a
+count taken from disk.
+
 ### 5.4 Process placement
 
 | Daemon | User | proxmod loads | Why |
@@ -559,7 +571,50 @@ is not mounted early in boot and is routinely unmounted during upgrades. Access
 from a *request* handler is normal and expected; access from `proxmod_register`
 is not.
 
-### 6.5 Isolation
+### 6.5 Wrapping a Proxmox seam
+
+Registering an endpoint adds to Proxmox. Wrapping a seam *changes* it, and the
+requirements below are what keep the second from costing more than the first.
+
+**[REQ-BE-026]** proxmod MUST provide the wrap, and an extension MUST NOT
+hand-roll one. `PVE::RESTHandler::map_method_by_name` returns the live method
+hashref and `AUTOLOAD` closes over that same hashref [PVE-F-054]; getting that
+right, and getting the probe, the degradation and the bookkeeping right with it,
+is not a thing to re-derive per extension.
+
+**[REQ-BE-027]** A wrap MUST declare a **posture**, and the framework MUST NOT
+supply a default. `closed` means a hook that dies refuses the wrapped call;
+`open` means it is logged and the original runs regardless. The two are
+opposites and neither is safe to assume — see [ADR 0012](adr/0012-wrap-posture-is-explicit.md),
+which is [REQ-BE-014]'s argument applied to a second silent default.
+
+**[REQ-BE-028]** A seam MUST be probed before it is wrapped, and one that is not
+found MUST be logged **once**, left unwrapped, and recorded — never guessed at,
+never approximated by wrapping a nearby method, and never a reason to refuse
+installing the others. A Proxmox upgrade that moves one method MUST cost that one
+feature and no more.
+
+**[REQ-BE-029]** Wrapping an API method MUST replace `$info->{code}` and nothing
+else. The parameter schema, the `permissions` block, the `protected` flag and the
+return type belong to Proxmox; a wrap that alters any of them is a compatibility
+break dressed up as a policy.
+
+**[REQ-BE-030]** A wrap MUST preserve the wrapped call's contract: its arguments,
+its calling context, and its return value. In particular the original MUST be
+invoked in the context its caller used, because forcing list context silently
+changes what a method returning a list means to a scalar caller.
+
+**[REQ-BE-031]** Wrapping the same seam twice MUST be a no-op rather than a
+second layer, for the same reason [REQ-BE-021] makes duplicate registration one:
+a doubled wrap runs every hook twice, and a hook that counts something would
+count it twice.
+
+**[REQ-BE-032]** proxmod MUST expose which seams are wrapped, which are not, and
+why — as data, not only as a log line. A wrap that failed logs once at load time;
+an operator asking months later whether a Proxmox upgrade moved a method has
+nowhere else to look. `proxmod-verify` MUST report it.
+
+### 6.6 Isolation
 
 **[REQ-FW-019]** proxmod MUST load and register each extension inside its own
 `eval`. One extension whose module does not compile, or whose
@@ -1364,6 +1419,7 @@ An implementation, or a release, conforms when every row passes. "Unit" is
 | C-06 | [REQ-FW-014], [REQ-FW-024] | `touch /etc/proxmod/disabled` + restart: daemons active, no tag | Unit `t/08`, QEMU |
 | C-07 | [REQ-FW-015] | `boot('pvestatd')` and `boot(undef)` outside a daemon load nothing | Unit `t/03` |
 | C-08 | [REQ-FW-018], [REQ-FW-034] | The `booted` line's exact shape, asserted from both `Boot` and `proxmod-verify` | Unit `t/03`, `t/10` |
+| C-08a | [REQ-FW-018b] | An extension declaring both halves is counted once by `pveproxy`, not once per stage; `extensions=` + `failed=` partitions the applicable set | Unit `t/03` |
 | C-09 | [REQ-FW-019], [REQ-FW-020] | A manifest naming a module that dies at `require`: both daemons active, the good extension registered, exactly one failure reported | Unit `t/05`, **QEMU** |
 | C-10 | [REQ-FW-028], [REQ-FW-029] | Each wrapper made to throw; the original's return value is unchanged | Unit `t/06` |
 | C-11 | [REQ-FW-031] | `Boot`, `Backend`, `Frontend` and `API` each localise `$SIG{__DIE__}` around their `eval`; a wrapper made to throw does not escape it | Unit `t/00`, `t/06` |
@@ -1713,9 +1769,10 @@ express.
 | REQ-FW-017 | The frontend stage runs in `pveproxy` only | 5.3 |
 | REQ-FW-018 | Exactly one `booted daemon=… extensions=… failed=… registry=…` line | 5.3 |
 | REQ-FW-018a | The fingerprint is a function of the registry, not of what one daemon loaded | 5.3 |
-| REQ-FW-019 | Per-extension `eval` isolation | 6.5 |
-| REQ-FW-020 | A failed extension logs once and is counted | 6.5 |
-| REQ-FW-021 | Never `eval "require $module"` | 6.5 |
+| REQ-FW-018b | `extensions=` and `failed=` count extensions, not stages, and partition them | 5.3 |
+| REQ-FW-019 | Per-extension `eval` isolation | 6.6 |
+| REQ-FW-020 | A failed extension logs once and is counted | 6.6 |
+| REQ-FW-021 | Never `eval "require $module"` | 6.6 |
 | REQ-FW-022 | One conffile, `key = value` | 10 |
 | REQ-FW-023 | Never depend on an environment variable | 10 |
 | REQ-FW-024 | The kill switch is a file's existence, checked before any Perl | 10 |
@@ -1780,6 +1837,13 @@ express.
 | REQ-BE-023 | Untaint everything read from disk | 6.4 |
 | REQ-BE-024 | No `:encoding()` on a tainted path | 6.4 |
 | REQ-BE-025 | No `/etc/pve` on a startup path | 6.4 |
+| REQ-BE-026 | proxmod provides the wrap; extensions do not hand-roll one | 6.5 |
+| REQ-BE-027 | **A wrap declares its posture; there is no default** | 6.5 |
+| REQ-BE-028 | Probe first; a missing seam is logged once and costs only itself | 6.5 |
+| REQ-BE-029 | Wrapping a method replaces `code` and nothing else | 6.5 |
+| REQ-BE-030 | A wrap preserves arguments, context and return value | 6.5 |
+| REQ-BE-031 | Wrapping the same seam twice is a no-op | 6.5 |
+| REQ-BE-032 | Seam state is exposed as data, and `proxmod-verify` reports it | 6.5 |
 
 ### `FE` — frontend extensions
 

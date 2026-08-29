@@ -1,7 +1,7 @@
 # Getting started
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every command below is run by the example package's
 `Makefile` or by the QEMU integration suite; the example source is

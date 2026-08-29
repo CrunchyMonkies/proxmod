@@ -1,7 +1,7 @@
 # The extension manifest
 
 **Status:** Draft
-**Applies to:** proxmod 0.2.2, Proxmox VE 9.x
+**Applies to:** proxmod 0.4.0, Proxmox VE 9.x
 **Last verified against:** pve-manager 9.1.1 (2026-08-08)
 **Verification method:** every field, default, pattern and rejection below was
 read out of [`perl/Proxmod/Registry.pm`](../perl/Proxmod/Registry.pm); parsing
@@ -145,7 +145,15 @@ would be a dead hypervisor API. The name is untainted by matching this pattern
 and rebuilding from the capture. A module name that does not match is refused
 and the backend half is skipped.
 
-**`backend.daemons`** — optional, defaults to **both**.
+**`backend.daemons`** — optional, defaults to **both daemons**.
+
+Accepts `pvedaemon` and `pveproxy`, and also `qm`, `pct` and `pvesh` — which are
+**not** in the default. A CLI is worth naming only if your extension wraps a
+seam, because a wrap installed in `pvedaemon` does not apply to a command
+somebody types `[PVE-F-055]`; and it does nothing at all until an operator
+enables one of `patches/6*-cli-*.conf`, which ship disabled
+([ADR 0013](adr/0013-cli-enforcement-is-opt-in.md)). An unrecognised name is
+warned about and ignored, never fatal.
 
 Valid values: `pvedaemon`, `pveproxy`. `pvestatd` is deliberately not accepted —
 it serves no REST API and does not run under taint mode, so there is nothing
